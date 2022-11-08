@@ -1,7 +1,7 @@
 from __future__ import division
-from keras.models import Model, Input
-from keras.layers import Conv2D, Concatenate, Activation, Lambda, Add, Upsampling
-import keras.backend as K
+import tensorflow as tf
+import tensorflow.keras as K
+from tensorflow.keras.layers import Input, Conv2D, Concatenate, Add, Upsampling2D
 
 class Scaling(K.layers.Layer):
     def __init__(self, scale, *args, **kwargs):
@@ -18,7 +18,7 @@ class Scaling(K.layers.Layer):
         })
         return config
 
-def ResidualBlock(K.layers.Layers):
+def ResidualBlock(K.layers.Layer):
     def __init__(self,
                  filters = 128,
                  kernel_size=(3,3),
@@ -160,4 +160,4 @@ def Sentinel2Model(scaling_factor = 4,
 
     output = Add(name='addition_final')([x, in_low])
 
-    return Model(inputs = [in_hi, in_low], outputs = output)
+    return K.models.Model(inputs = [in_hi, in_low], outputs = output)

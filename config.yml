@@ -1,0 +1,28 @@
+---
+default:
+  run_id: 'test'
+  restart: false
+training:
+  directory:
+    training_hires:    /home/dryglicki/data/sentinel-2/paired/training/red
+    training_lowres:   /home/dryglicki/data/sentinel-2/paired/training/nirLow
+    truth_train:       /home/dryglicki/data/sentinel-2/paired/training/nirHigh
+    validation_hires:  /home/dryglicki/data/sentinel-2/paired/validation/red
+    validation_lowres: /home/dryglicki/data/sentinel-2/paired/validation/nirLow
+    truth_valid:       /home/dryglicki/data/sentinel-2/paired/validation/nirHigh
+  dataset:
+    batch_size: 36
+    shuffle_size: 72
+  fit:
+    epochs: 30
+    steps_per_epoch:
+    validation_steps: 5
+  model:
+    scaling_factor: 4
+    filter_size: 128
+    num_blocks: 6
+    interpolation: 'bilinear'
+  optimizer:
+    initial_lr: 1.5e-4
+    final_lr: 1.0e-5
+    beta_1: 0.9
