@@ -13,7 +13,7 @@ from argparse import ArgumentParser
 import yaml
 import gc
 
-from utils.DSen2Net_new import Sentinel2Model
+from utils.DSen2Net_new import Sentinel2Model, Sentinel2ModelUnet
 
 DESCRIPTION = 'Training a pan-sharpening neural network.'
 
@@ -22,7 +22,11 @@ def create_full_dataset(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='inp
     return tf.data.Dataset.zip( (ds_X, Y_hi) )
 
 def normalize(image):
-    return image / 255.0
+    return image / 255.
+
+def normalize_tanh(image):
+    half = 255. / 2.
+    return (image - half) / half
 
 def decode_file(image_file):
     image = tf.io.read_file(image_file)
@@ -51,26 +55,6 @@ def create_full_dataset_2(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='i
     ds_X = tf.data.Dataset.zip( (X_hi, X_low) ).map(lambda X_hi, X_low: {X_hi_name : X_hi, X_low_name : X_low } )
     return tf.data.Dataset.zip( (ds_X, Y_hi) )
 
-
-def decode_files( trainfiles, hi_true ):
-    hi_train, low_train = trainfiles
-    im1 = tf.io.read_file(hi_train)
-    im1 = tf.image.decode_png(im1, channels=1)
-    if (len(im1.shape) == 2):
-        im1 = tf.expand_dims(im1, axis = -1)
-
-    im2 = tf.io.read_file(low_train)
-    im2 = tf.image.decode_png(im2, channels=1)
-    if (len(im2.shape) == 2):
-        im2 = tf.expand_dims(im2, axis = -1)
-
-    im3 = tf.io.read_file(hi_true)
-    im3 = tf.image.decode_png(im3, channels=1)
-    if (len(im3.shape) == 2):
-        im3 = tf.expand_dims(im3, axis = -1)
-        
-    return ( normalize(tf.cast(im1, tf.float32)), normalize(tf.cast(im2, tf.float32))) , normalize(tf.cast(im3, tf.float32))
-
 def main():
     parser = ArgumentParser(description=DESCRIPTION)
     parser.add_argument('yaml_file', help = 'YAML file with training guidelines.')
@@ -84,6 +68,7 @@ def main():
 
     RUN_ID = config['default']['run_id']
     RESTART = config['default']['restart']
+    MODEL = config['default']['model'].lower()
 
     p = Path.cwd()
     runPath = p / RUN_ID
@@ -115,14 +100,6 @@ def main():
 #   ds_valid = ds_valid.map(decode_files, num_parallel_calls = tf.data.experimental.AUTOTUNE)
     ds_valid = ds_valid.shuffle(int(config['training']['dataset']['shuffle_size'])).batch(int(config['training']['dataset']['batch_size']))
 
-    del ds_train_hi
-    del ds_train_lo
-    del ds_valid_hi
-    del ds_valid_lo
-    del ds_target_tr
-    del ds_target_va
-    gc.collect()
-
     # Datasets prepped.
     # Learning rate.
 
@@ -145,10 +122,10 @@ def main():
     if not checkpoint_directory.exists(): checkpoint_directory.mkdir(parents=True)
     if not log_directory.exists(): log_directory.mkdir(parents=True)
 
-    checkpoint_name = str(checkpoint_directory) + '/weights-{epoch:04d}-min_val_loss.hdf5'
+    checkpoint_name = checkpoint_directory / 'weights-{epoch:04d}-min_val_loss.hdf5'
 
     checkpointcb = K.callbacks.ModelCheckpoint(
-            filepath = os.path.dirname(checkpoint_name),
+            filepath = checkpoint_name,
             verbose = 1,
             save_weights_only = True,
             monitor = 'val_loss',
@@ -199,6 +176,14 @@ def main():
             validation_steps = config['training']['fit']['validation_steps'] )
 #           validation_data =  ds_valid,
 #           validation_steps = config['training']['fit']['validation_steps'] )
+
+    savePath = runPath / 'saved_model'
+    savePathWeights = runPath / 'saved_model_weights'
+    try:
+        model.save(savePath)
+        model.save_weights(savePathWeights)
+    except:
+        model.save_weights(savePathWeights)
 
     df = pd.DataFrame.from_dict(history)
     histPath = runPath / 'history'

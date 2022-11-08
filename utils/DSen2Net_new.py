@@ -1,6 +1,6 @@
 import tensorflow as tf
 import tensorflow.keras as K
-from tensorflow.keras.layers import Input, Conv2D, Concatenate, Add, UpSampling2D, Dropout
+from tensorflow.keras.layers import Input, Conv2D, Concatenate, Add, UpSampling2D, Dropout, MaxPool2D, LeakyReLU, BatchNormalization
 
 class Scaling(K.layers.Layer):
     def __init__(self, scale, *args, **kwargs):
@@ -41,15 +41,14 @@ class ResidualBlock(K.layers.Layer):
                 Conv2D(self.filters, self.kernel_size, strides=self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
                 self.activation,
                 Conv2D(self.filters, self.kernel_size, strides = self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
-                K.layers.BatchNormalization(),
-                Scaling(scale=self.scaling)
+                BatchNormalization(),
                 ]
 
             self.skip_layers = []
             if strides > 1:
                 self.skip_layers = [
                         Conv2D(self.filters, 1, strides = self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
-                        K.layers.BatchNormalization()
+                        BatchNormalization()
                         ]
         else:
             self.main_layers = [
@@ -72,7 +71,10 @@ class ResidualBlock(K.layers.Layer):
         skip_Z = inputs
         for layer in self.skip_layers:
             skip_Z = layer(skip_Z)
-        return Add()([Z, skip_Z]) # Feels strange not to BatchNorm and ReLU here
+        if self.add_batchnorm:
+            return self.activationa(Z + skip_Z)
+        else:
+            return Add()([Z, skip_Z]) # Feels strange not to BatchNorm and ReLU here
 
     def get_config(self):
         config = super().get_config().copy()
@@ -125,4 +127,58 @@ def Sentinel2Model(scaling_factor = 4,
     x = Add(name='addition_final')([x, up_low])
 
     output = Conv2D(1, 1, kernel_initializer = initializer, padding='same', activation='sigmoid', name = 'conv2d_final')(x)
+    return K.models.Model(inputs = [in_hi, in_low], outputs = output)
+
+def Sentinel2ModelUnet(scaling_factor = 4,
+                       filter_sizes = [ 64, 128, 256, 512, 1024 ],
+                       interpolation = 'bilinear',
+                       initializer = 'glorot_uniform',
+                       activation_final = 'sigmoid',
+                       filter_first = None,
+                       filter_last  = None,
+                       training = True):
+
+    if filter_first == None: filter_first = filter_sizes[0]
+    if filter_last  == None: filter_last  = filter_sizes[0]
+
+    # Hi_Res input
+    in_hi = Input(shape = [None, None, 1], name = 'input_hi')
+
+    #Low-res input
+    in_low = Input(shape = [None, None, 1], name = 'input_low')
+    
+    # Up-rez the input
+    up_low = UpSampling2D(size = (scaling_factor, scaling_factor), interpolation = interpolation, name = 'Upsampling_low-resolution_input')(in_low)
+
+    concat = Concatenate(name='Concatenate_two-channels')([in_hi,up_low])
+
+    x = Conv2D(filter_first, (3,3), kernel_initializer = initializer, activation='relu', padding='same', name= 'conv2d_initial')(concat)
+
+    # Encoder route
+    skips = []
+    for filt in filter_sizes[:-1]:
+        x = ResidualBlock(filters = filter_size, initializer = initializer, add_batchnorm = True)(x)
+        skips.append(x)
+        x = ResidualBlock(filters = filter_size, strides = 2, initializer = initializer, add_batchnorm = True)(x)
+
+    skips = skips[::-1]
+
+    x = Conv2D(filter_sizes[-1], (3,3), initializer=initializer, activation='relu', padding='same', name = 'bottleneck')(x)
+
+    for filt, skip in zip(filter_sizes[::-1][1:], skips):
+        x = Upsampling2D(size = (2,2), interpolation = 'nearest')(x)
+        x = Conv2D(filt, (3,3), kernel_initializer = initializer, padding='same', use_bias = False)(x)
+        x = BatchNormalization()(x)
+        x = LeakyReLU(0.2)(x)
+        x = Concatenate()([x, skip])
+        x = Conv2D(filt, (3,3), kernel_initializer = initializer, padding='same', use_bias = False)(x)
+        x = BatchNormalization()(x)
+        x = LeakyReLU(0.2)(x)
+        x = Dropout(0.2)(x, training=training)
+
+    x = Conv2D(filter_last, (3,3), kernel_initializer = initializer, padding='same', use_bias = False, name = 'conv2d_final')(x)
+    x = BatchNormalization(name='batchnorm_final')(x)
+    x = LeakyReLU(0.2, name='lrelu_final')
+
+    output = Conv2D(1, 1, kernel_initializer = initializer, activation = activation_final, padding='same', use_bias = False, name='conv2d_output')(x)
     return K.models.Model(inputs = [in_hi, in_low], outputs = output)

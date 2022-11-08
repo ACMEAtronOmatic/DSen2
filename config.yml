@@ -1,7 +1,8 @@
 ---
 default:
-  run_id: 'test'
+  run_id: 'test_2'
   restart: false
+  model_type: 'DSen2'
 training:
   directory:
     training_hires:    /home/dryglicki/data/sentinel-2/paired/training/red
@@ -22,6 +23,12 @@ training:
     filter_size: 128
     num_blocks: 6
     interpolation: 'bilinear'
+    unet_filter_sizes:
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
   optimizer:
     initial_lr: 1.5e-4
     final_lr: 1.0e-5
