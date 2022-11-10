@@ -1,8 +1,8 @@
 ---
 default:
-  run_id: 'test_2'
+  run_id: 'DSen2_new'
   restart: false
-  model_type: 'DSen2'
+  model: 'DSen2'
 training:
   directory:
     training_hires:    /home/dryglicki/data/sentinel-2/paired/training/red
@@ -15,7 +15,7 @@ training:
     batch_size: 36
     shuffle_size: 72
   fit:
-    epochs: 30
+    epochs: 200
     steps_per_epoch:
     validation_steps: 5
   model:
@@ -29,7 +29,8 @@ training:
       - 128
       - 256
       - 512
+    classic: false
   optimizer:
-    initial_lr: 1.5e-4
+    initial_lr: 2.0e-4
     final_lr: 1.0e-5
     beta_1: 0.9

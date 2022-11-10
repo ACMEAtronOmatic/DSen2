@@ -72,7 +72,7 @@ class ResidualBlock(K.layers.Layer):
         for layer in self.skip_layers:
             skip_Z = layer(skip_Z)
         if self.add_batchnorm:
-            return self.activationa(Z + skip_Z)
+            return self.activation(Z + skip_Z)
         else:
             return Add()([Z, skip_Z]) # Feels strange not to BatchNorm and ReLU here
 
@@ -97,7 +97,8 @@ def Sentinel2Model(scaling_factor = 4,
                    filter_first = None,
                    filter_res   = None,
                    filter_last  = None,
-                   training = True):
+                   training = True,
+                   classic = True):
 
     if filter_first == None: filter_first = filter_size
     if filter_res   == None: filter_res   = filter_size
@@ -121,12 +122,16 @@ def Sentinel2Model(scaling_factor = 4,
     for block in range(num_blocks):
         x = ResidualBlock(filters = filter_size, initializer=initializer)(x)
 
-    x = Dropout(0.2)(x, training=training)
-    x = Conv2D(1, (3,3), kernel_initializer = initializer, padding='same', activation='tanh', name='conv2d_after_res_block')(x)
 
-    x = Add(name='addition_final')([x, up_low])
+    if classic:
+        x = Conv2D(1, (3,3) kernel_initializer = initializer, padding='same', name = 'conv2d_final')(x)
+        output = Add(name='addition_final')([x,up_low])
+    else:
+        x = Dropout(0.2)(x, training=training)
+        x = Conv2D(1, (3,3), kernel_initializer = initializer, padding='same', activation='tanh', name='conv2d_after_res_block')(x)
+        x = Add(name='addition_final')([x, up_low])
+        output = Conv2D(1, 1, kernel_initializer = initializer, padding='same', activation='sigmoid', name = 'conv2d_final')(x)
 
-    output = Conv2D(1, 1, kernel_initializer = initializer, padding='same', activation='sigmoid', name = 'conv2d_final')(x)
     return K.models.Model(inputs = [in_hi, in_low], outputs = output)
 
 def Sentinel2ModelUnet(scaling_factor = 4,

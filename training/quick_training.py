@@ -11,7 +11,9 @@ import pandas as pd
 import h5py
 from argparse import ArgumentParser
 import yaml
+import pickle
 import gc
+import shutil
 
 from utils.DSen2Net_new import Sentinel2Model, Sentinel2ModelUnet
 
@@ -72,6 +74,9 @@ def main():
 
     p = Path.cwd()
     runPath = p / RUN_ID
+    if not runPath.exists(): runPath.mkdir(parents=True)
+    yaml_name = args.yaml_file.split('/')[-1]
+    shutil.copy(args.yaml_file, runPath / yaml_name)
 
     trainingHiRes = Path(config['training']['directory']['training_hires'])
     trainingLoRes = Path(config['training']['directory']['training_lowres'])
@@ -117,20 +122,28 @@ def main():
     else:
         lr_schedule = initial_lr
 
+    best_checkpoint_directory = Path(RUN_ID) / 'best_checkpoints'
     checkpoint_directory = Path(RUN_ID) / 'checkpoints'
     log_directory = Path(RUN_ID) / 'logs'
     if not checkpoint_directory.exists(): checkpoint_directory.mkdir(parents=True)
     if not log_directory.exists(): log_directory.mkdir(parents=True)
+    if not best_checkpoint_directory.exists(): best_checkpoint_directory.mkdir(parents=True)
 
-    checkpoint_name = checkpoint_directory / 'weights-{epoch:04d}-min_val_loss.hdf5'
+    best_checkpoint_name = best_checkpoint_directory / 'best-{epoch:04d}-min_val_loss'
+    checkpoint_name = checkpoint_directory / 'ckpt-{epoch:04d}'
 
-    checkpointcb = K.callbacks.ModelCheckpoint(
-            filepath = checkpoint_name,
+    checkpointcbbest = K.callbacks.ModelCheckpoint(
+            filepath = best_checkpoint_name,
             verbose = 1,
             save_weights_only = True,
             monitor = 'val_loss',
             mode = 'min',
-            save_best_only = True)
+            save_best_only = True) # Will only save best checkpoint in checkpoint format
+
+    checkpointcb = K.callbacks.ModelCheckpoint(
+            filepath = checkpoint_name,
+            verbose = 1) # PROTOBUF format
+
 
     metrics = [K.metrics.MeanAbsoluteError(),
                K.metrics.MeanAbsolutePercentageError(),
@@ -140,28 +153,30 @@ def main():
 
     earlystopcb = K.callbacks.EarlyStopping(
             monitor='val_loss',
-            patience=5,
+            patience=3,
             verbose=1,
             mode='min')
 
     tbcb = K.callbacks.TensorBoard(
             log_dir = log_directory,
-            update_freq = 'batch')
+            update_freq = 'batch',
+            write_graph = True)
 
-    callbacks = [checkpointcb, tbcb]
+    callbacks = [checkpointcb, tbcb, checkpointcbbest]
 
     model = Sentinel2Model(
             scaling_factor = config['training']['model']['scaling_factor'],
             filter_size = config['training']['model']['filter_size'],
             num_blocks = config['training']['model']['num_blocks'],
-            interpolation = config['training']['model']['interpolation']
+            interpolation = config['training']['model']['interpolation'],
+            classic = config['training']['model']['classic']
             )
 
     optimizer = K.optimizers.Adam(learning_rate = lr_schedule,
                       beta_1 = config['training']['optimizer']['beta_1'],
                       name = 'Adam_Sentinel2')
 
-    model.compile(optimizer = optimizer, loss = [losses], metrics = [metrics], jit_compile=False)
+    model.compile(optimizer = optimizer, loss = losses, metrics = metrics, jit_compile=False)
 
     # Fit the model!
 
@@ -178,17 +193,24 @@ def main():
 #           validation_steps = config['training']['fit']['validation_steps'] )
 
     savePath = runPath / 'saved_model'
-    savePathWeights = runPath / 'saved_model_weights'
-    try:
-        model.save(savePath)
-        model.save_weights(savePathWeights)
-    except:
-        model.save_weights(savePathWeights)
+    savePathKeras = runPath / 'saved_model_keras'
+    savePathWeightDir = runPath / 'weights'
+    savePathWeights = savePathWeightDir / f'model_{MODEL}'
 
-    df = pd.DataFrame.from_dict(history)
+#   try:
+#   tf.saved_model.save(model, savePath)
+    model.save(savePathKeras) # PROTOBUF format
+    model.save_weights(savePathWeights) # Looks like a tensorflow checkpoint
+#   except:
+#       model.save_weights(savePathWeights)
+
     histPath = runPath / 'history'
     if not histPath.exists(): histPath.mkdir(parents=True)
-    filePath = histPath / f'history.{RUN_ID}.pkl'
+    with open(histPath / 'trainedHistory.pkl', 'wb') as f:
+        pickle.dump(history.history, f)
+
+    df = pd.DataFrame.from_dict(history.history)
+    filePath = histPath / f'history_df.{RUN_ID}.pkl'
     df.to_pickle(filePath)
 
 if __name__ == '__main__':
