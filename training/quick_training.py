@@ -28,7 +28,14 @@ def normalize(image):
 
 def normalize_tanh(image):
     half = 255. / 2.
-    return (image - half) / half
+    return (image / half) - 1.
+
+def decode_file_tanh(image_file):
+    image = tf.io.read_file(image_file)
+    image = tf.image.decode_png(image, channels=1)
+    if len(image.shape) == 2:
+        image = tf.expand_dims(image, axis = -1)
+    return normalize_tanh(tf.cast(image, tf.float32))
 
 def decode_file(image_file):
     image = tf.io.read_file(image_file)
@@ -37,22 +44,15 @@ def decode_file(image_file):
         image = tf.expand_dims(image, axis = -1)
     return normalize(tf.cast(image, tf.float32))
 
-def decode_file_and_upsample(image_file, scale=2):
-    scale = tf.constant(scale, dtype=tf.int64)
-    image = tf.io.read_file(image_file)
-    image = tf.image.decode_png(image, channels=1)
-    if len(image.shape) == 2:
-        image = tf.expand_dims(image, axis = -1)
-    w, h, c = image.shape
-    wu = tf.constant(w, dtype=tf.int64) * scale ; hu = tf.constant(h, dtype=tf.int64) * scale
-    image = tf.image.resize(image, [wu, hu, c])
-    return normalize(tf.cast(image, tf.float32))
-
-
-def create_full_dataset_2(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low', scale=4):
-    X_hi = X_hi.map(decode_file)
-    X_low = X_low.map(decode_file)
-    Y_hi = Y_hi.map(decode_file)
+def create_full_dataset_2(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low', scale=4, arch='dsen2'):
+    if arch.lower() != 'dsen2':
+        X_hi = X_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        X_low = X_low.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        Y_hi = Y_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+    else:
+        X_hi = X_hi.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        X_low = X_low.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        Y_hi = Y_hi.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
 
     ds_X = tf.data.Dataset.zip( (X_hi, X_low) ).map(lambda X_hi, X_low: {X_hi_name : X_hi, X_low_name : X_low } )
     return tf.data.Dataset.zip( (ds_X, Y_hi) )
@@ -71,10 +71,14 @@ def main():
     RUN_ID = config['default']['run_id']
     RESTART = config['default']['restart']
     MODEL = config['default']['model'].lower()
+    OPTIMIZER = config['training']['optimizer']['name'].lower()
 
     p = Path.cwd()
     runPath = p / RUN_ID
     if not runPath.exists(): runPath.mkdir(parents=True)
+    if runPath.exists() and noclobber:
+        raise Exception("Run directory exists and noclobber set. Exiting.")
+
     yaml_name = args.yaml_file.split('/')[-1]
     shutil.copy(args.yaml_file, runPath / yaml_name)
 
@@ -96,8 +100,13 @@ def main():
     ds_target_tr = tf.data.Dataset.list_files(str(trainingTarget / '*.png'), shuffle=False)
     ds_target_va = tf.data.Dataset.list_files(str(validationTarget / '*.png'), shuffle=False)
 
-    ds_train = create_full_dataset_2(ds_train_hi, ds_train_lo, ds_target_tr)
-    ds_valid = create_full_dataset_2(ds_valid_hi, ds_valid_lo, ds_target_va)
+    if MODEL == 'unet':
+        norm_func = normalize_tanh
+    else:
+        norm_func = normalize
+
+    ds_train = create_full_dataset_2(ds_train_hi, ds_train_lo, ds_target_tr, arch = MODEL)
+    ds_valid = create_full_dataset_2(ds_valid_hi, ds_valid_lo, ds_target_va, arch = MODEL)
 
 #   ds_train = ds_train.map(decode_files, num_parallel_calls = tf.data.experimental.AUTOTUNE)
     ds_train = ds_train.shuffle(int(config['training']['dataset']['shuffle_size'])).batch(int(config['training']['dataset']['batch_size']))
@@ -129,7 +138,7 @@ def main():
     if not log_directory.exists(): log_directory.mkdir(parents=True)
     if not best_checkpoint_directory.exists(): best_checkpoint_directory.mkdir(parents=True)
 
-    best_checkpoint_name = best_checkpoint_directory / 'best-{epoch:04d}-min_val_loss'
+    best_checkpoint_name = best_checkpoint_directory / 'best-min_val_loss-epoch_{epoch:04d}.hdf5'
     checkpoint_name = checkpoint_directory / 'ckpt-{epoch:04d}'
 
     checkpointcbbest = K.callbacks.ModelCheckpoint(
@@ -139,6 +148,9 @@ def main():
             monitor = 'val_loss',
             mode = 'min',
             save_best_only = True) # Will only save best checkpoint in checkpoint format
+            # VERY IMPORTANT GOTCHA HERE
+            # Evidently, saving this in a non-HDF5 format with the epoch in the file name
+            # will break upon weights reloading.
 
     checkpointcb = K.callbacks.ModelCheckpoint(
             filepath = checkpoint_name,
@@ -151,9 +163,13 @@ def main():
 
     losses = [K.losses.MeanAbsoluteError()]
 
+    try:
+        patience = int(config['training']['fit']['patience'])
+    except:
+        patience = 10
     earlystopcb = K.callbacks.EarlyStopping(
             monitor='val_loss',
-            patience=3,
+            patience=patience,
             verbose=1,
             mode='min')
 
@@ -162,19 +178,42 @@ def main():
             update_freq = 'batch',
             write_graph = True)
 
-    callbacks = [checkpointcb, tbcb, checkpointcbbest]
+    callbacks = [checkpointcb, tbcb, checkpointcbbest, earlystopcb]
 
-    model = Sentinel2Model(
+    if MODEL == 'dsen2':
+        model = Sentinel2Model(
             scaling_factor = config['training']['model']['scaling_factor'],
             filter_size = config['training']['model']['filter_size'],
             num_blocks = config['training']['model']['num_blocks'],
             interpolation = config['training']['model']['interpolation'],
-            classic = config['training']['model']['classic']
+            classic = config['training']['model']['classic'],
+            training = True
             )
+    elif MODEL == 'unet':
+        model = Sentinel2ModelUnet(
+                scaling_factor = config['training']['model']['scaling_factor'],
+                filter_sizes = config['training']['model']['unet_filter_sizes'],
+                interpolation = config['training']['model']['interpolation'],
+                training = True,
+                activation_final = 'tanh'
+                )
+    else:
+        raise Exception("Model type not identified.")
 
-    optimizer = K.optimizers.Adam(learning_rate = lr_schedule,
+
+    if OPTIMIZER == 'adam':
+        optimizer = K.optimizers.Adam(learning_rate = lr_schedule,
                       beta_1 = config['training']['optimizer']['beta_1'],
+                      beta_2 = config['training']['optimizer']['beta_2'],
+                      epsilon = config['training']['optimizer']['epsilon'],
                       name = 'Adam_Sentinel2')
+    elif OPTIMIZER == 'nadam':
+        optimizer = K.optimizers.Nadam(learning_rate = initial_lr,
+                      beta_1 = config['training']['optimizer']['beta_1'],
+                      beta_2 = config['training']['optimizer']['beta_2'],
+                      epsilon = config['training']['optimizer']['epsilon'],
+                      name = 'Nadam_Sentinel2')
+
 
     model.compile(optimizer = optimizer, loss = losses, metrics = metrics, jit_compile=False)
 

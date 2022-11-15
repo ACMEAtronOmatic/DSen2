@@ -38,7 +38,7 @@ class ResidualBlock(K.layers.Layer):
 
         if self.add_batchnorm:
             self.main_layers = [
-                Conv2D(self.filters, self.kernel_size, strides=self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
+                Conv2D(self.filters, self.kernel_size, strides=1, padding='same', kernel_initializer = self.initializer, use_bias=False),
                 self.activation,
                 Conv2D(self.filters, self.kernel_size, strides = self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
                 BatchNormalization(),
@@ -52,7 +52,7 @@ class ResidualBlock(K.layers.Layer):
                         ]
         else:
             self.main_layers = [
-                Conv2D(self.filters, self.kernel_size, strides=self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
+                Conv2D(self.filters, self.kernel_size, strides=1, padding='same', kernel_initializer = self.initializer, use_bias=False),
                 self.activation,
                 Conv2D(self.filters, self.kernel_size, strides = self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
                 Scaling(scale=self.scaling)
@@ -124,7 +124,7 @@ def Sentinel2Model(scaling_factor = 4,
 
 
     if classic:
-        x = Conv2D(1, (3,3) kernel_initializer = initializer, padding='same', name = 'conv2d_final')(x)
+        x = Conv2D(1, (3,3), kernel_initializer = initializer, padding='same', name = 'conv2d_final')(x)
         output = Add(name='addition_final')([x,up_low])
     else:
         x = Dropout(0.2)(x, training=training)
@@ -159,31 +159,35 @@ def Sentinel2ModelUnet(scaling_factor = 4,
 
     x = Conv2D(filter_first, (3,3), kernel_initializer = initializer, activation='relu', padding='same', name= 'conv2d_initial')(concat)
 
+    first = x
+
     # Encoder route
     skips = []
-    for filt in filter_sizes[:-1]:
-        x = ResidualBlock(filters = filter_size, initializer = initializer, add_batchnorm = True)(x)
+    for filt, filt_next in zip(filter_sizes[:-1], filter_sizes[1:]):
+        x = ResidualBlock(filters = filt, initializer = initializer, add_batchnorm = True)(x)
+        x = ResidualBlock(filters = filt, initializer = initializer, add_batchnorm = True)(x)
         skips.append(x)
-        x = ResidualBlock(filters = filter_size, strides = 2, initializer = initializer, add_batchnorm = True)(x)
+        x = ResidualBlock(filters = filt_next, strides = 2, initializer = initializer, add_batchnorm = True)(x)
 
     skips = skips[::-1]
 
-    x = Conv2D(filter_sizes[-1], (3,3), initializer=initializer, activation='relu', padding='same', name = 'bottleneck')(x)
+    x = Conv2D(filter_sizes[-1], (3,3), kernel_initializer=initializer, activation='relu', padding='same', name = 'bottleneck')(x)
 
     for filt, skip in zip(filter_sizes[::-1][1:], skips):
-        x = Upsampling2D(size = (2,2), interpolation = 'nearest')(x)
+        x = UpSampling2D(size = (2,2), interpolation = 'nearest')(x)
         x = Conv2D(filt, (3,3), kernel_initializer = initializer, padding='same', use_bias = False)(x)
-        x = BatchNormalization()(x)
         x = LeakyReLU(0.2)(x)
+        x = BatchNormalization()(x)
         x = Concatenate()([x, skip])
         x = Conv2D(filt, (3,3), kernel_initializer = initializer, padding='same', use_bias = False)(x)
-        x = BatchNormalization()(x)
         x = LeakyReLU(0.2)(x)
+        x = BatchNormalization()(x)
         x = Dropout(0.2)(x, training=training)
 
+    x = Concatenate()([x, first])
     x = Conv2D(filter_last, (3,3), kernel_initializer = initializer, padding='same', use_bias = False, name = 'conv2d_final')(x)
-    x = BatchNormalization(name='batchnorm_final')(x)
-    x = LeakyReLU(0.2, name='lrelu_final')
+    x = LeakyReLU(0.2, name='lrelu_final')(x)
+#   x = BatchNormalization(name='batchnorm_final')(x)
 
     output = Conv2D(1, 1, kernel_initializer = initializer, activation = activation_final, padding='same', use_bias = False, name='conv2d_output')(x)
     return K.models.Model(inputs = [in_hi, in_low], outputs = output)

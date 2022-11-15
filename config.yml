@@ -1,8 +1,8 @@
 ---
 default:
-  run_id: 'DSen2_new'
+  run_id: 'unet_first_002'
   restart: false
-  model: 'DSen2'
+  model: 'unet'
 training:
   directory:
     training_hires:    /home/dryglicki/data/sentinel-2/paired/training/red
@@ -12,12 +12,13 @@ training:
     validation_lowres: /home/dryglicki/data/sentinel-2/paired/validation/nirLow
     truth_valid:       /home/dryglicki/data/sentinel-2/paired/validation/nirHigh
   dataset:
-    batch_size: 36
-    shuffle_size: 72
+    batch_size: 48
+    shuffle_size: 96
   fit:
     epochs: 200
     steps_per_epoch:
-    validation_steps: 5
+    validation_steps: 8
+    patience: 10
   model:
     scaling_factor: 4
     filter_size: 128
@@ -29,8 +30,12 @@ training:
       - 128
       - 256
       - 512
+      - 1024
     classic: false
   optimizer:
+    name: 'adam'
     initial_lr: 2.0e-4
     final_lr: 1.0e-5
-    beta_1: 0.9
+    beta_1: 0.5
+    beta_2: 0.999
+    epsilon: 1.0e-7
