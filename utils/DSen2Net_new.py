@@ -2,6 +2,9 @@ import tensorflow as tf
 import tensorflow.keras as K
 from tensorflow.keras.layers import Input, Conv2D, Concatenate, Add, UpSampling2D, Dropout, MaxPool2D, LeakyReLU, BatchNormalization
 
+
+
+
 class Scaling(K.layers.Layer):
     def __init__(self, scale, *args, **kwargs):
         self.scale = scale
@@ -138,10 +141,12 @@ def Sentinel2ModelUnet(scaling_factor = 4,
                        filter_sizes = [ 64, 128, 256, 512, 1024 ],
                        interpolation = 'bilinear',
                        initializer = 'glorot_uniform',
-                       activation_final = 'sigmoid',
+                       activation_final = 'tanh',
                        filter_first = None,
                        filter_last  = None,
-                       training = True):
+                       training = True,
+                       add_batchnorm = False,
+                       final_layer = 'extra'):
 
     if filter_first == None: filter_first = filter_sizes[0]
     if filter_last  == None: filter_last  = filter_sizes[0]
@@ -164,10 +169,10 @@ def Sentinel2ModelUnet(scaling_factor = 4,
     # Encoder route
     skips = []
     for filt, filt_next in zip(filter_sizes[:-1], filter_sizes[1:]):
-        x = ResidualBlock(filters = filt, initializer = initializer, add_batchnorm = True)(x)
-        x = ResidualBlock(filters = filt, initializer = initializer, add_batchnorm = True)(x)
+        x = ResidualBlock(filters = filt, initializer = initializer, add_batchnorm = add_batchnorm)(x)
+        x = ResidualBlock(filters = filt, initializer = initializer, add_batchnorm = add_batchnorm)(x)
         skips.append(x)
-        x = ResidualBlock(filters = filt_next, strides = 2, initializer = initializer, add_batchnorm = True)(x)
+        x = ResidualBlock(filters = filt_next, strides = 2, initializer = initializer, add_batchnorm = add_batchnorm)(x)
 
     skips = skips[::-1]
 
@@ -185,9 +190,15 @@ def Sentinel2ModelUnet(scaling_factor = 4,
         x = Dropout(0.2)(x, training=training)
 
     x = Concatenate()([x, first])
-    x = Conv2D(filter_last, (3,3), kernel_initializer = initializer, padding='same', use_bias = False, name = 'conv2d_final')(x)
-    x = LeakyReLU(0.2, name='lrelu_final')(x)
-#   x = BatchNormalization(name='batchnorm_final')(x)
 
-    output = Conv2D(1, 1, kernel_initializer = initializer, activation = activation_final, padding='same', use_bias = False, name='conv2d_output')(x)
+    if final_layer == 'extra':
+        x = Conv2D(filter_last, (3,3), kernel_initializer = initializer, padding='same', use_bias = False, name = 'conv2d_final')(x)
+        x = LeakyReLU(0.2, name='lrelu_final')(x)
+#   x = BatchNormalization(name='batchnorm_final')(x)
+        output = Conv2D(1, 1, kernel_initializer = initializer, activation = activation_final, padding='same', use_bias = False, name='conv2d_output')(x)
+    elif final_layer == 'simple':
+        output = Conv2D(1, (3,3), kernel_initializer = initializer, activation = activation_final, padding='same', use_bias = False, name='conv2d_output')(x)
+    else:
+        raise Exception("Unknown final_layer. Options: extra, simple")
+
     return K.models.Model(inputs = [in_hi, in_low], outputs = output)

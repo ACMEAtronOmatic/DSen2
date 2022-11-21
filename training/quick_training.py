@@ -16,12 +16,9 @@ import gc
 import shutil
 
 from utils.DSen2Net_new import Sentinel2Model, Sentinel2ModelUnet
+from utils.DSen2Net_losses import MSE_and_DSSIM
 
 DESCRIPTION = 'Training a pan-sharpening neural network.'
-
-def create_full_dataset(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low'):
-    ds_X = tf.data.Dataset.zip( (X_hi, X_low) ).map(lambda X_hi, X_low: {X_hi_name : X_hi, X_low_name : X_low } )
-    return tf.data.Dataset.zip( (ds_X, Y_hi) )
 
 def normalize(image):
     return image / 255.
@@ -44,15 +41,17 @@ def decode_file(image_file):
         image = tf.expand_dims(image, axis = -1)
     return normalize(tf.cast(image, tf.float32))
 
-def create_full_dataset_2(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low', scale=4, arch='dsen2'):
-    if arch.lower() != 'dsen2':
-        X_hi = X_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
-        X_low = X_low.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
-        Y_hi = Y_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
-    else:
+def create_full_dataset(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low', activation='sigmoid'):
+    if activation.lower() == 'sigmoid':
+        X_hi   = X_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        X_low  = X_low.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        Y_hi   = Y_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+    elif activation.lower() == 'tanh':
         X_hi = X_hi.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
         X_low = X_low.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
         Y_hi = Y_hi.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+    else:
+        raise Exception("Activation function unknown. Options: sigmoid, tanh.")
 
     ds_X = tf.data.Dataset.zip( (X_hi, X_low) ).map(lambda X_hi, X_low: {X_hi_name : X_hi, X_low_name : X_low } )
     return tf.data.Dataset.zip( (ds_X, Y_hi) )
@@ -100,18 +99,10 @@ def main():
     ds_target_tr = tf.data.Dataset.list_files(str(trainingTarget / '*.png'), shuffle=False)
     ds_target_va = tf.data.Dataset.list_files(str(validationTarget / '*.png'), shuffle=False)
 
-    if MODEL == 'unet':
-        norm_func = normalize_tanh
-    else:
-        norm_func = normalize
+    ds_train = create_full_dataset(ds_train_hi, ds_train_lo, ds_target_tr, activation = config['training']['model']['activation_final'])
+    ds_valid = create_full_dataset(ds_valid_hi, ds_valid_lo, ds_target_va, activation = config['training']['model']['activation_final'])
 
-    ds_train = create_full_dataset_2(ds_train_hi, ds_train_lo, ds_target_tr, arch = MODEL)
-    ds_valid = create_full_dataset_2(ds_valid_hi, ds_valid_lo, ds_target_va, arch = MODEL)
-
-#   ds_train = ds_train.map(decode_files, num_parallel_calls = tf.data.experimental.AUTOTUNE)
     ds_train = ds_train.shuffle(int(config['training']['dataset']['shuffle_size'])).batch(int(config['training']['dataset']['batch_size']))
-
-#   ds_valid = ds_valid.map(decode_files, num_parallel_calls = tf.data.experimental.AUTOTUNE)
     ds_valid = ds_valid.shuffle(int(config['training']['dataset']['shuffle_size'])).batch(int(config['training']['dataset']['batch_size']))
 
     # Datasets prepped.
@@ -131,6 +122,7 @@ def main():
     else:
         lr_schedule = initial_lr
 
+    # Directories for checkpoints/logs
     best_checkpoint_directory = Path(RUN_ID) / 'best_checkpoints'
     checkpoint_directory = Path(RUN_ID) / 'checkpoints'
     log_directory = Path(RUN_ID) / 'logs'
@@ -161,7 +153,8 @@ def main():
                K.metrics.MeanAbsolutePercentageError(),
                K.metrics.MeanSquaredError()]
 
-    losses = [K.losses.MeanAbsoluteError()]
+    #losses = [K.losses.MeanAbsoluteError()]
+    losses = [MSE_and_DSSIM(weight_dssim=0.3)]
 
     try:
         patience = int(config['training']['fit']['patience'])
@@ -180,6 +173,7 @@ def main():
 
     callbacks = [checkpointcb, tbcb, checkpointcbbest, earlystopcb]
 
+    # Build model.
     if MODEL == 'dsen2':
         model = Sentinel2Model(
             scaling_factor = config['training']['model']['scaling_factor'],
@@ -195,12 +189,15 @@ def main():
                 filter_sizes = config['training']['model']['unet_filter_sizes'],
                 interpolation = config['training']['model']['interpolation'],
                 training = True,
-                activation_final = 'tanh'
+                activation_final = config['training']['model']['activation_final'],
+                add_batchnorm = config['training']['model']['add_batchnorm'],
+                final_layer = config['training']['model']['final_layer']
                 )
     else:
         raise Exception("Model type not identified.")
 
 
+    # Define optimizer.
     if OPTIMIZER == 'adam':
         optimizer = K.optimizers.Adam(learning_rate = lr_schedule,
                       beta_1 = config['training']['optimizer']['beta_1'],
@@ -214,12 +211,9 @@ def main():
                       epsilon = config['training']['optimizer']['epsilon'],
                       name = 'Nadam_Sentinel2')
 
-
     model.compile(optimizer = optimizer, loss = losses, metrics = metrics, jit_compile=False)
 
     # Fit the model!
-
-
     history = model.fit(
             ds_train,
             epochs = epochs,
@@ -228,20 +222,14 @@ def main():
             steps_per_epoch = steps_per_epoch,
             validation_data =  ds_valid,
             validation_steps = config['training']['fit']['validation_steps'] )
-#           validation_data =  ds_valid,
-#           validation_steps = config['training']['fit']['validation_steps'] )
 
     savePath = runPath / 'saved_model'
     savePathKeras = runPath / 'saved_model_keras'
     savePathWeightDir = runPath / 'weights'
     savePathWeights = savePathWeightDir / f'model_{MODEL}'
 
-#   try:
-#   tf.saved_model.save(model, savePath)
-    model.save(savePathKeras) # PROTOBUF format
+    model.save(savePathKeras)           # PROTOBUF format
     model.save_weights(savePathWeights) # Looks like a tensorflow checkpoint
-#   except:
-#       model.save_weights(savePathWeights)
 
     histPath = runPath / 'history'
     if not histPath.exists(): histPath.mkdir(parents=True)

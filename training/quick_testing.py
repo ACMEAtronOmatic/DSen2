@@ -27,8 +27,18 @@ import pygraphviz
 DESCRIPTION = 'Plotting Pan-sharpening CNN output.'
 BATCH_SIZE = 1
 
+def simple_plot(ax, image, title='image', cmap='bone', vmin=0.0, vmax=1.0):
+    ax.imshow(image, cmap = cmap, vmin = vmin, vmax = vmax)
+    ax.set_title(title)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
 def denormalize(image):
     return image * 255.
+
+def denormalize_tanh(image):
+    half = 255. / 2.
+    return (image + 1.) * half
 
 def normalize(image):
     return image / 255.
@@ -44,10 +54,24 @@ def decode_file(image_file):
         image = tf.expand_dims(image, axis = -1)
     return normalize(tf.cast(image, tf.float32))
 
-def create_predict_dataset(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low'):
-    X_hi = X_hi.map(decode_file)
-    X_low = X_low.map(decode_file)
-    Y_hi = Y_hi.map(decode_file)
+def decode_file_tanh(image_file):
+    image = tf.io.read_file(image_file)
+    image = tf.image.decode_png(image, channels=1)
+    if len(image.shape) == 2:
+        image = tf.expand_dims(image, axis = -1)
+    return normalize_tanh(tf.cast(image, tf.float32))
+
+def create_predict_dataset(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low', activation='sigmoid'):
+    if activation.lower() == 'sigmoid':
+        X_hi   = X_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        X_low  = X_low.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        Y_hi   = Y_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+    elif activation.lower() == 'tanh':
+        X_hi = X_hi.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        X_low = X_low.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+        Y_hi = Y_hi.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+    else:
+        raise Exception("Activation function unknown. Options: sigmoid, tanh.")
 
     ds_X = tf.data.Dataset.zip( (X_hi, X_low) ).map(lambda X_hi, X_low: {X_hi_name : X_hi, X_low_name : X_low } )
     return tf.data.Dataset.zip( (ds_X, Y_hi) )
@@ -80,7 +104,7 @@ def main():
     ds_valid_lo = tf.data.Dataset.list_files(str(validationLoRes / '*.png'), shuffle=False)
     ds_target_va = tf.data.Dataset.list_files(str(validationTarget / '*.png'), shuffle=False)
     
-    ds_valid = create_predict_dataset(ds_valid_hi, ds_valid_lo, ds_target_va)
+    ds_valid = create_predict_dataset(ds_valid_hi, ds_valid_lo, ds_target_va, activation=config['training']['model']['activation_final'])
     ds_valid = ds_valid.batch(BATCH_SIZE)
 
     fnames = sorted(list(validationTarget.glob('*.png')))
@@ -100,15 +124,19 @@ def main():
                 filter_sizes = config['training']['model']['unet_filter_sizes'],
                 interpolation = config['training']['model']['interpolation'],
                 training = False,
+                activation_final = config['training']['model']['activation_final'],
+                add_batchnorm = config['training']['model']['add_batchnorm'],
+                final_layer = config['training']['model']['final_layer']
                 )
     else:
         raise Exception("Model needs to be one of: dsen2, unet")
+    
+    if config['training']['model']['activation_final'] == 'tanh':
+        denorm = denormalize_tanh
+    elif config['training']['model']['activation_final'] == 'sigmoid':
+        denorm = denormalize
 
     plot_model(model, show_shapes=True, show_layer_names=True, dpi=300, to_file = 'model_structure.png')
-
-    # For the future, allow reading of other checkpoints.
-#   savePathWeightDir = runPath / 'weights'
-#   savePathWeights = savePathWeightDir / f'model_{MODEL}'
 
     print('Loading model...')
     if 'hdf5' in weightsPath.name.split('.')[-1].lower() or 'h5' in weightsPath.name.split('.')[-1].lower():
@@ -117,15 +145,13 @@ def main():
         model.load_weights(weightsPath).expect_partial()
     print('Success!')
 
-    
-    fig = plt.figure(figsize=(10,6))
-#   for n, (X, Y), fname in enumerate(ds_valid,fnames):
+    fig = plt.figure(figsize=(10,7))
     for X, Y in ds_valid:
 
-        hi = denormalize(np.squeeze(X['input_hi'].numpy()))
-        lo = denormalize(np.squeeze(X['input_low'].numpy()))
-        out = denormalize(np.squeeze(model.predict(X)))
-        truth = denormalize(np.squeeze(Y.numpy()))
+        hi = denorm(np.squeeze(X['input_hi'].numpy()))
+        lo = denorm(np.squeeze(X['input_low'].numpy()))
+        out = denorm(np.squeeze(model.predict(X)))
+        truth = denorm(np.squeeze(Y.numpy()))
         # Create images out of all these.
         imhi = Image.fromarray(hi)
         imlo = Image.fromarray(lo)
@@ -139,12 +165,17 @@ def main():
         imlobl = imlo.resize( [whi, hhi], resample = Image.Resampling.BILINEAR)
 
         axes = fig.subplots(nrows = 2, ncols = 3).flatten()
-        ax = axes[0] ; ax.imshow(imhi, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('VIS hi-res')
-        ax = axes[1] ; ax.imshow(imlo, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('NIR low-res')
-        ax = axes[2] ; ax.imshow(imtruth, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('NIR truth')
-        ax = axes[3] ; ax.imshow(imlobc, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('NIR bicubic')
-        ax = axes[4] ; ax.imshow(imlobl, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('NIR bilinear')
-        ax = axes[5] ; ax.imshow(imout, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('NIR CNN')
+        images = [imhi, imlo, imtruth, imlobc, imlobl, imout]
+        titles = [ '(a) VIS hi-res', '(b) NIR low-res', '(c) NIR truth', '(d) NIR bicubic', '(e) NIR bilinear', '(f) NIR CNN' ]
+        
+        for ax, im, title in zip(axes, images, titles):
+            simple_plot(ax,im,title)
+#       ax = axes[0] ; ax.imshow(imhi, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(a) VIS hi-res')
+#       ax = axes[1] ; ax.imshow(imlo, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(b) NIR low-res')
+#       ax = axes[2] ; ax.imshow(imtruth, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(c) NIR truth')
+#       ax = axes[3] ; ax.imshow(imlobc, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(d) NIR bicubic')
+#       ax = axes[4] ; ax.imshow(imlobl, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(e) NIR bilinear')
+#       ax = axes[5] ; ax.imshow(imout, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(f) NIR CNN')
 
         fig.savefig('test.png', dpi=200, bbox_inches='tight')
 

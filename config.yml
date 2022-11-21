@@ -1,6 +1,6 @@
 ---
 default:
-  run_id: 'unet_first_002'
+  run_id: 'unet_sigmoid_nearest_extra_dssim'
   restart: false
   model: 'unet'
 training:
@@ -23,7 +23,7 @@ training:
     scaling_factor: 4
     filter_size: 128
     num_blocks: 6
-    interpolation: 'bilinear'
+    interpolation: 'nearest'
     unet_filter_sizes:
       - 32
       - 64
@@ -32,10 +32,13 @@ training:
       - 512
       - 1024
     classic: false
+    add_batchnorm: true
+    final_layer: 'extra'
+    activation_final: 'sigmoid'
   optimizer:
     name: 'adam'
     initial_lr: 2.0e-4
     final_lr: 1.0e-5
-    beta_1: 0.5
+    beta_1: 0.90
     beta_2: 0.999
     epsilon: 1.0e-7
