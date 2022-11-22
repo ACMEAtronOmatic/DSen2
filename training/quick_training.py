@@ -74,9 +74,9 @@ def main():
 
     p = Path.cwd()
     runPath = p / RUN_ID
-    if not runPath.exists(): runPath.mkdir(parents=True)
     if runPath.exists() and noclobber:
         raise Exception("Run directory exists and noclobber set. Exiting.")
+    if not runPath.exists(): runPath.mkdir(parents=True)
 
     yaml_name = args.yaml_file.split('/')[-1]
     shutil.copy(args.yaml_file, runPath / yaml_name)
