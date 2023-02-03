@@ -1,9 +1,28 @@
 import tensorflow as tf
 import tensorflow.keras as K
-from tensorflow.keras.layers import Input, Conv2D, Concatenate, Add, UpSampling2D, Dropout, MaxPool2D, LeakyReLU, BatchNormalization
+from tensorflow.keras.layers import Input, Conv2D, Concatenate, Add, UpSampling2D, Dropout, MaxPool2D, LeakyReLU, BatchNormalization, SpatialDropout2D
+from sympy import factorint
 
+class PixelShuffle(K.layers.Layer):
+    def __init__(self,
+                 block_size = 2,
+                 data_format=None,
+                 *args,
+                 **kwargs):
+        self.block_size  = block_size
+        self.data_format = data_format
+        super(PixelShuffle, self).__init__(*args,**kwargs)
 
+    def call(self, inputs):
+        return tf.nn.depth_to_space(inputs, block_size = self.block_size, data_format = self.data_format)
 
+    def get_config(self):
+        config = super().get_config().copy()
+        config.update({
+            'block_size' : self.block_size,
+            'data_format': self.data_format
+            })
+        return config
 
 class Scaling(K.layers.Layer):
     def __init__(self, scale, *args, **kwargs):
@@ -92,11 +111,73 @@ class ResidualBlock(K.layers.Layer):
             })
         return config
 
+def Sentinel2EDSR(scaling_factor = 4,
+                  filter_size = 64,
+                  num_blocks = 6,
+                  interpolation = 'nearest',
+                  initializer = 'glorot_uniform',
+                  scaling = 0.1,
+                  upsample = 'shuffle',
+                  channels = 1,
+                  add_batchnorm = False,
+                  filter_first = None,
+                  filter_res   = None,
+                  filter_last  = None):
+
+    upsample_options = ['shuffle', 'ups']
+
+    if upsample.lower() not in upsample_options:
+        raise Exception(f"Upsampling option must be one: {upsample_options}. User provided: {upsample.lower()}")
+
+    upsample = upsample.lower()
+
+    if filter_first == None: filter_first = filter_size
+    if filter_res   == None: filter_res   = filter_size
+    if filter_last  == None: filter_last  = filter_size
+
+    in_low = K.layers.Input( shape = [None, None, channels], name = 'input_low')
+    in_hi = K.layers.Input( shape = [None, None, channels], name = 'input_hi') # Dummy layer.
+
+    x = K.layers.Conv2D(filter_first, 3, padding='same', activation = 'relu', initializer=initializer, name = 'first_conv2d')(in_low)
+    x = x_orig = K.layers.Conv2D(filter_first, 3, padding='same', activation = 'relu', initializer=initializer, name = 'second_conv2d')(x)
+
+    for _ in range(num_blocks):
+        x = ResidualBlock(filters = filter_res, initializer=initializer, scaling=scaling, add_batchnorm = add_batchnorm, name = f'ResBlock_{_:04d}')(x)
+
+    # Global feature fusion.
+    x = K.layers.Conv2D(filter_first, 1, padding='same', initializer = initializer, name = 'global_feature_fusion_01')(x)
+    x = K.layers.Conv2D(filter_first, 3, padding='same', initializer = initializer, name = 'global_feature_fusion_02')(x)
+    
+    x = K.layers.Add(name='add_after_fusion')([x, x_orig])
+
+    # Factorize the scaling_factor
+    # The idea here is that if scaling_factor is too large, we can factorize in smaller jumps to improve performance.
+
+    factorDict = factorint(scaling_factor)
+    factorList = []
+    for k, v in factorDict.items():
+        for _ in range(v):
+            factorList.append(k)
+
+    if upsample == 'shuffle':
+        for ii, factor in enumerate(factorList):
+            x = K.layers.Conv2D(filter_last * (factor ** 2), 3, padding='same', initializer=initializer, name = f'conv2d_pixel_shuffle_{ii:02d}')(x)
+            x = PixelShuffle(block_size = factor,name = f'pixel_shuffle_{ii:02d}')(x)
+    elif upsample == 'ups':
+        for ii, factor in enumerate(factorList):
+            x = UpSampling2D(size=(factor), interpolation=interpolation, name=f'upsampling2d_{ii:02d}')(x)
+            x = K.layers.Conv2D(filter_last, 3, padding='same', initializer=initializer, name = f'conv2d_upsampling2d_{ii:02d}')(x)
+
+    output = K.layers.Conv2D(channels, 3, padding="same", initializer=initializer, name = 'final_conv2d')(x)
+
+    return K.models.Model(inputs = [in_hi, in_low], outputs = output)
+
 def Sentinel2Model(scaling_factor = 4,
                    filter_size  = 128,
                    num_blocks   = 6, 
                    interpolation = 'bilinear',
                    initializer = 'glorot_uniform',
+                   scaling = 0.1,
                    filter_first = None,
                    filter_res   = None,
                    filter_last  = None,
@@ -123,14 +204,15 @@ def Sentinel2Model(scaling_factor = 4,
 
     # Residual Blocks
     for block in range(num_blocks):
-        x = ResidualBlock(filters = filter_size, initializer=initializer)(x)
-
+        x = ResidualBlock(filters = filter_size, initializer=initializer, scaling=scaling)(x)
+        if not classic:
+            x = SpatialDropout2D(0.1)(x, training=training)
 
     if classic:
         x = Conv2D(1, (3,3), kernel_initializer = initializer, padding='same', name = 'conv2d_final')(x)
         output = Add(name='addition_final')([x,up_low])
     else:
-        x = Dropout(0.2)(x, training=training)
+        x = SpatialDropout2D(0.1)(x, training=training)
         x = Conv2D(1, (3,3), kernel_initializer = initializer, padding='same', activation='tanh', name='conv2d_after_res_block')(x)
         x = Add(name='addition_final')([x, up_low])
         output = Conv2D(1, 1, kernel_initializer = initializer, padding='same', activation='sigmoid', name = 'conv2d_final')(x)
@@ -183,11 +265,11 @@ def Sentinel2ModelUnet(scaling_factor = 4,
         x = Conv2D(filt, (3,3), kernel_initializer = initializer, padding='same', use_bias = False)(x)
         x = LeakyReLU(0.2)(x)
         x = BatchNormalization()(x)
-        x = Concatenate()([x, skip])
+        x = Concatenate(name=f'concat_upsample_{filt}')([x, skip])
         x = Conv2D(filt, (3,3), kernel_initializer = initializer, padding='same', use_bias = False)(x)
         x = LeakyReLU(0.2)(x)
         x = BatchNormalization()(x)
-        x = Dropout(0.2)(x, training=training)
+        x = SpatialDropout2D(0.1)(x, training=training)
 
     x = Concatenate()([x, first])
 
