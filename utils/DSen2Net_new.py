@@ -122,7 +122,8 @@ def Sentinel2EDSR(scaling_factor = 4,
                   add_batchnorm = False,
                   filter_first = None,
                   filter_res   = None,
-                  filter_last  = None):
+                  filter_last  = None,
+                  training = True):
 
     upsample_options = ['shuffle', 'ups']
 
@@ -138,15 +139,15 @@ def Sentinel2EDSR(scaling_factor = 4,
     in_low = K.layers.Input( shape = [None, None, channels], name = 'input_low')
     in_hi = K.layers.Input( shape = [None, None, channels], name = 'input_hi') # Dummy layer.
 
-    x = K.layers.Conv2D(filter_first, 3, padding='same', activation = 'relu', initializer=initializer, name = 'first_conv2d')(in_low)
-    x = x_orig = K.layers.Conv2D(filter_first, 3, padding='same', activation = 'relu', initializer=initializer, name = 'second_conv2d')(x)
+    x = K.layers.Conv2D(filter_first, 3, padding='same', activation = 'relu', kernel_initializer=initializer, name = 'first_conv2d')(in_low)
+    x = x_orig = K.layers.Conv2D(filter_first, 3, padding='same', activation = 'relu', kernel_initializer=initializer, name = 'second_conv2d')(x)
 
     for _ in range(num_blocks):
         x = ResidualBlock(filters = filter_res, initializer=initializer, scaling=scaling, add_batchnorm = add_batchnorm, name = f'ResBlock_{_:04d}')(x)
 
     # Global feature fusion.
-    x = K.layers.Conv2D(filter_first, 1, padding='same', initializer = initializer, name = 'global_feature_fusion_01')(x)
-    x = K.layers.Conv2D(filter_first, 3, padding='same', initializer = initializer, name = 'global_feature_fusion_02')(x)
+    x = K.layers.Conv2D(filter_first, 1, padding='same', kernel_initializer = initializer, name = 'global_feature_fusion_01')(x)
+    x = K.layers.Conv2D(filter_first, 3, padding='same', kernel_initializer = initializer, name = 'global_feature_fusion_02')(x)
     
     x = K.layers.Add(name='add_after_fusion')([x, x_orig])
 
@@ -161,14 +162,14 @@ def Sentinel2EDSR(scaling_factor = 4,
 
     if upsample == 'shuffle':
         for ii, factor in enumerate(factorList):
-            x = K.layers.Conv2D(filter_last * (factor ** 2), 3, padding='same', initializer=initializer, name = f'conv2d_pixel_shuffle_{ii:02d}')(x)
+            x = K.layers.Conv2D(filter_last * (factor ** 2), 3, padding='same', kernel_initializer=initializer, name = f'conv2d_pixel_shuffle_{ii:02d}')(x)
             x = PixelShuffle(block_size = factor,name = f'pixel_shuffle_{ii:02d}')(x)
     elif upsample == 'ups':
         for ii, factor in enumerate(factorList):
             x = UpSampling2D(size=(factor), interpolation=interpolation, name=f'upsampling2d_{ii:02d}')(x)
-            x = K.layers.Conv2D(filter_last, 3, padding='same', initializer=initializer, name = f'conv2d_upsampling2d_{ii:02d}')(x)
+            x = K.layers.Conv2D(filter_last, 3, padding='same', kernel_initializer=initializer, name = f'conv2d_upsampling2d_{ii:02d}')(x)
 
-    output = K.layers.Conv2D(channels, 3, padding="same", initializer=initializer, name = 'final_conv2d')(x)
+    output = K.layers.Conv2D(channels, 3, padding="same", kernel_initializer=initializer, name = 'final_conv2d')(x)
 
     return K.models.Model(inputs = [in_hi, in_low], outputs = output)
 
