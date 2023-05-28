@@ -20,8 +20,9 @@ import gc
 import shutil
 import PIL
 from PIL import Image
+from skimage.metrics import mean_squared_error as mse, structural_similarity as ssim
 
-from utils.DSen2Net_new import Sentinel2Model, Sentinel2ModelUnet
+from utils.DSen2Net_new import Sentinel2Model, Sentinel2ModelUnet, Sentinel2EDSR
 import pygraphviz
 
 DESCRIPTION = 'Plotting Pan-sharpening CNN output.'
@@ -62,6 +63,7 @@ def decode_file_tanh(image_file):
     return normalize_tanh(tf.cast(image, tf.float32))
 
 def create_predict_dataset(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low', activation='sigmoid'):
+    fname = Y_hi
     if activation.lower() == 'sigmoid':
         X_hi   = X_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
         X_low  = X_low.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
@@ -74,8 +76,16 @@ def create_predict_dataset(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='
         raise Exception("Activation function unknown. Options: sigmoid, tanh.")
 
     ds_X = tf.data.Dataset.zip( (X_hi, X_low) ).map(lambda X_hi, X_low: {X_hi_name : X_hi, X_low_name : X_low } )
-    return tf.data.Dataset.zip( (ds_X, Y_hi) )
+    return tf.data.Dataset.zip( (ds_X, Y_hi, fname) )
 
+def pretty_print_metrics(metrics):
+    print(" ------------ ")
+    for imtype in metrics.keys():
+        for metricType in metrics[imtype].keys():
+            avgVal = np.mean(metrics[imtype][metricType])
+            print(f"{imtype}, {metricType}: {avgVal}")
+        print()
+    print(" ------------ ")
 
 def main():
     parser = ArgumentParser(description=DESCRIPTION)
@@ -96,18 +106,20 @@ def main():
     runPath = p / RUN_ID
     if not runPath.exists(): runPath.mkdir(parents=True)
 
-    validationHiRes = Path(config['training']['directory']['validation_hires'])
-    validationLoRes = Path(config['training']['directory']['validation_lowres'])
-    validationTarget = Path(config['training']['directory']['truth_valid'])
+    imagePath = runPath / 'images'
+    if not imagePath.exists(): imagePath.mkdir(parents=True)
+    print(imagePath)
 
-    ds_valid_hi = tf.data.Dataset.list_files(str(validationHiRes / '*.png'), shuffle=False)
-    ds_valid_lo = tf.data.Dataset.list_files(str(validationLoRes / '*.png'), shuffle=False)
-    ds_target_va = tf.data.Dataset.list_files(str(validationTarget / '*.png'), shuffle=False)
+    validationHiRes = Path(config['inference']['directory']['test_hires'])
+    validationLoRes = Path(config['inference']['directory']['test_lowres'])
+    validationTarget = Path(config['inference']['directory']['truth_test'])
+
+    ds_valid_hi = tf.data.Dataset.list_files(str(validationHiRes / config['inference']['glob']['test_hires']), shuffle=False)
+    ds_valid_lo = tf.data.Dataset.list_files(str(validationLoRes / config['inference']['glob']['test_lowres']), shuffle=False)
+    ds_target_va = tf.data.Dataset.list_files(str(validationTarget / config['inference']['glob']['truth_test'] ), shuffle=False)
     
     ds_valid = create_predict_dataset(ds_valid_hi, ds_valid_lo, ds_target_va, activation=config['training']['model']['activation_final'])
     ds_valid = ds_valid.batch(BATCH_SIZE)
-
-    fnames = sorted(list(validationTarget.glob('*.png')))
 
     if MODEL == 'dsen2':
         model = Sentinel2Model(
@@ -128,15 +140,26 @@ def main():
                 add_batchnorm = config['training']['model']['add_batchnorm'],
                 final_layer = config['training']['model']['final_layer']
                 )
+    elif MODEL == 'edsr':
+        model = Sentinel2EDSR(
+                scaling_factor = config['training']['model']['scaling_factor'],
+                filter_size = config['training']['model']['filter_size'],
+                num_blocks = config['training']['model']['num_blocks'],
+                interpolation = config['training']['model']['interpolation'],
+                upsample = config['training']['model']['upsample'],
+                scaling = config['training']['model']['scaling'],
+                training = True,
+                initializer = config['training']['model']['initializer']
+                )
     else:
-        raise Exception("Model needs to be one of: dsen2, unet")
+        raise Exception("Model needs to be one of: dsen2, unet, edsr")
     
     if config['training']['model']['activation_final'] == 'tanh':
         denorm = denormalize_tanh
     elif config['training']['model']['activation_final'] == 'sigmoid':
         denorm = denormalize
 
-    plot_model(model, show_shapes=True, show_layer_names=True, dpi=300, to_file = 'model_structure.png')
+    plot_model(model, show_shapes=True, show_layer_names=True, dpi=200, to_file = f'model_structure_{MODEL}.png')
 
     print('Loading model...')
     if 'hdf5' in weightsPath.name.split('.')[-1].lower() or 'h5' in weightsPath.name.split('.')[-1].lower():
@@ -145,43 +168,69 @@ def main():
         model.load_weights(weightsPath).expect_partial()
     print('Success!')
 
-    fig = plt.figure(figsize=(10,7))
-    for X, Y in ds_valid:
+    if MODEL == 'edsr':
+        fig = plt.figure(figsize=(10,6))
+        for X, Y, fname in ds_valid:
+            hi = denorm(np.squeeze(X['input_hi'].numpy()))
 
-        hi = denorm(np.squeeze(X['input_hi'].numpy()))
-        lo = denorm(np.squeeze(X['input_low'].numpy()))
-        out = denorm(np.squeeze(model.predict(X)))
-        truth = denorm(np.squeeze(Y.numpy()))
-        # Create images out of all these.
-        imhi = Image.fromarray(hi)
-        imlo = Image.fromarray(lo)
-        imout = Image.fromarray(out)
-        imtruth = Image.fromarray(truth)
+    else:
+        fig = plt.figure(figsize=(9,8))
+        metrics = {}
+        upResLogics = ['Bilinear', 'Bicubic', 'CNN']
+        metricTypes = ['mae', 'mse', 'ssim']
+        for upResLogic in upResLogics:
+            metrics[upResLogic] = {}
+            for metricType in metricTypes:
+                metrics[upResLogic][metricType] = []
 
-        hhi = imhi.height ; whi = imhi.width
-        hlo = imlo.height ; hlo = imlo.width
+        for X, Y, fname in ds_valid:
 
-        imlobc = imlo.resize( [whi, hhi], resample = Image.Resampling.BICUBIC)
-        imlobl = imlo.resize( [whi, hhi], resample = Image.Resampling.BILINEAR)
+            inPath = Path(str(fname.numpy()))
+            fStem = inPath.stem
+            outputPath = imagePath / f'{fStem}_sr.png'
+    
+            hi = denorm(np.squeeze(X['input_hi'].numpy()))
+            lo = denorm(np.squeeze(X['input_low'].numpy()))
+            out = denorm(np.squeeze(model.predict(X)))
+            truth = denorm(np.squeeze(Y.numpy()))
+            # Create images out of all these.
+            imhi = Image.fromarray(hi)
+            imlo = Image.fromarray(lo)
+            imout = Image.fromarray(out)
+            imtruth = Image.fromarray(truth)
+    
+            hhi = imhi.height ; whi = imhi.width
+            hlo = imlo.height ; hlo = imlo.width
+    
+            imlobc = imlo.resize( [whi, hhi], resample = Image.Resampling.BICUBIC)
+            imlobl = imlo.resize( [whi, hhi], resample = Image.Resampling.BILINEAR)
 
-        axes = fig.subplots(nrows = 2, ncols = 3).flatten()
-        images = [imhi, imlo, imtruth, imlobc, imlobl, imout]
-        titles = [ '(a) VIS hi-res', '(b) NIR low-res', '(c) NIR truth', '(d) NIR bicubic', '(e) NIR bilinear', '(f) NIR CNN' ]
-        
-        for ax, im, title in zip(axes, images, titles):
-            simple_plot(ax,im,title)
-#       ax = axes[0] ; ax.imshow(imhi, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(a) VIS hi-res')
-#       ax = axes[1] ; ax.imshow(imlo, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(b) NIR low-res')
-#       ax = axes[2] ; ax.imshow(imtruth, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(c) NIR truth')
-#       ax = axes[3] ; ax.imshow(imlobc, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(d) NIR bicubic')
-#       ax = axes[4] ; ax.imshow(imlobl, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(e) NIR bilinear')
-#       ax = axes[5] ; ax.imshow(imout, cmap='bone', vmin=0.0, vmax=1.0) ; ax.set_title('(f) NIR CNN')
+            # Compute metrics
+            metrics['Bilinear']['mae'].append(np.mean(np.abs(np.array(imlobl) - np.array(imtruth))))
+            metrics['Bilinear']['mse'].append(mse(np.array(imtruth),np.array(imlobl)))
+            metrics['Bilinear']['ssim'].append(ssim(np.array(imtruth),np.array(imlobl), data_range = np.array(imlobl).max() - np.array(imlobl).min()))
+            metrics['Bicubic']['mae'].append(np.mean(np.abs(np.array(imlobc) - np.array(imtruth))))
+            metrics['Bicubic']['mse'].append(mse(np.array(imtruth),np.array(imlobc)))
+            metrics['Bicubic']['ssim'].append(ssim(np.array(imtruth),np.array(imlobc), data_range = np.array(imlobc).max() - np.array(imlobc).min()))
+            metrics['CNN']['mae'].append(np.mean(np.abs(np.array(imout) - np.array(imtruth))))
+            metrics['CNN']['mse'].append(mse(np.array(imtruth),np.array(imout)))
+            metrics['CNN']['ssim'].append(ssim(np.array(imtruth),np.array(imout), data_range = np.array(imout).max() - np.array(imout).min()))
+    
+            axes = fig.subplots(nrows = 3, ncols = 2, gridspec_kw = {'hspace': 0.2, 'wspace':0.05} ).flatten()
+#           images = [imhi, imlo, imtruth, imlobc, imlobl, imout]
+#           titles = [ '(a) VIS hi-res', '(b) NIR low-res', '(c) NIR truth', '(d) NIR bicubic', '(e) NIR bilinear', '(f) NIR CNN' ]
+#           For OWR
+            images = [imhi, imlobl, imlo, imlobc, imtruth, imout]
+            titles = [ '(a) Broadband hi-res', '(b) NIR bilinear', '(c) NIR low-res', '(d) NIR bicubic', '(e) NIR truth', '(f) NIR CNN' ]
+            
+            for ax, im, title in zip(axes, images, titles):
+                simple_plot(ax,im,title)
+    
+            fig.savefig(outputPath, dpi=200, bbox_inches='tight')
+    
+            fig.clf()
 
-        fig.savefig('test.png', dpi=200, bbox_inches='tight')
-
-        exit()
-        fig.clf()
-
+        pretty_print_metrics(metrics)
 
 if __name__ == '__main__':
     main()

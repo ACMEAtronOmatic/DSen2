@@ -14,9 +14,10 @@ import yaml
 import pickle
 import gc
 import shutil
+from datetime import datetime, timedelta
 
-from utils.DSen2Net_new import Sentinel2Model, Sentinel2ModelUnet
-from utils.DSen2Net_losses import MSE_and_DSSIM
+from utils.DSen2Net_new import Sentinel2Model, Sentinel2ModelUnet, Sentinel2EDSR, Sentinel2ModelSPD
+from utils.DSen2Net_losses import MSE_and_DSSIM, MAE_and_DSSIM
 
 DESCRIPTION = 'Training a pan-sharpening neural network.'
 
@@ -34,24 +35,48 @@ def decode_file_tanh(image_file):
         image = tf.expand_dims(image, axis = -1)
     return normalize_tanh(tf.cast(image, tf.float32))
 
-def decode_file(image_file):
+#def decode_file(image_file):
+#    image = tf.io.read_file(image_file)
+#    image = tf.image.decode_png(image, channels=1)
+#    if len(image.shape) == 2:
+#        image = tf.expand_dims(image, axis = -1)
+#    return normalize(tf.cast(image, tf.float32))
+
+def decode_file(image_file, randoms = [None, None], activation = 'sigmoid'):
     image = tf.io.read_file(image_file)
     image = tf.image.decode_png(image, channels=1)
+
+    augment = None not in randoms
+    if augment:
+        random_flip, random_rotate = randoms
+        if random_flip > 0.5: image = tf.image.flip_left_right(image)
+        image = tf.image.rot90(image, k=random_rotate)
+
     if len(image.shape) == 2:
         image = tf.expand_dims(image, axis = -1)
-    return normalize(tf.cast(image, tf.float32))
 
-def create_full_dataset(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low', activation='sigmoid'):
-    if activation.lower() == 'sigmoid':
-        X_hi   = X_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
-        X_low  = X_low.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
-        Y_hi   = Y_hi.map(decode_file, num_parallel_calls = tf.data.experimental.AUTOTUNE)
-    elif activation.lower() == 'tanh':
-        X_hi = X_hi.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
-        X_low = X_low.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
-        Y_hi = Y_hi.map(decode_file_tanh, num_parallel_calls = tf.data.experimental.AUTOTUNE)
+    if activation == 'sigmoid':
+        return normalize(tf.cast(image,tf.float32))
+    elif activation == 'tanh':
+        return normalize_tanh(tf.cast(image,tf.float32))
     else:
-        raise Exception("Activation function unknown. Options: sigmoid, tanh.")
+        return tf.cast(image,tf.float32)
+
+def create_full_dataset(X_hi, X_low, Y_hi, X_hi_name='input_hi', X_low_name='input_low', activation='sigmoid', training=False):
+    activation = activation.lower()
+    ACTIVATIONS = ['sigmoid', 'tanh']
+    if activation not in ACTIVATIONS: raise Exception("Activation function unknown. Options: sigmoid, tanh.")
+
+    if training:
+        rnFlip = tf.random.uniform(shape=(), maxval=1.0, dtype = tf.float64)
+        rnRot  = tf.random.uniform(shape=(), maxval=4, dtype=tf.int32)
+        randoms = [rnFlip, rnRot]
+    else:
+        randoms = [None, None]
+
+    X_hi = X_hi.map(lambda x: decode_file(x, randoms=randoms, activation = activation), num_parallel_calls = tf.data.experimental.AUTOTUNE)
+    X_low = X_low.map(lambda x: decode_file(x, randoms=randoms, activation = activation), num_parallel_calls = tf.data.experimental.AUTOTUNE)
+    Y_hi = Y_hi.map(lambda x: decode_file(x, randoms=randoms, activation = activation), num_parallel_calls = tf.data.experimental.AUTOTUNE)
 
     ds_X = tf.data.Dataset.zip( (X_hi, X_low) ).map(lambda X_hi, X_low: {X_hi_name : X_hi, X_low_name : X_low } )
     return tf.data.Dataset.zip( (ds_X, Y_hi) )
@@ -72,6 +97,8 @@ def main():
     MODEL = config['default']['model'].lower()
     OPTIMIZER = config['training']['optimizer']['name'].lower()
 
+    weightsPath = Path(config['training']['restart']['path'])
+
     p = Path.cwd()
     runPath = p / RUN_ID
     if runPath.exists() and noclobber:
@@ -90,17 +117,21 @@ def main():
     trainingTarget = Path(config['training']['directory']['truth_train'])
     validationTarget = Path(config['training']['directory']['truth_valid'])
 
-    ds_train_hi = tf.data.Dataset.list_files(str(trainingHiRes / '*.png'), shuffle=False) # Definitely do NOT shuffle these datasets at read-in time
-    ds_train_lo = tf.data.Dataset.list_files(str(trainingLoRes / '*.png'), shuffle=False)
+    ds_train_hi = tf.data.Dataset.list_files(str(trainingHiRes / config['training']['glob']['training_hires']), \
+                                             shuffle=False) # Definitely do NOT shuffle these datasets at read-in time
+    ds_train_lo = tf.data.Dataset.list_files(str(trainingLoRes / config['training']['glob']['training_lowres']), \
+                                             shuffle=False)
 
-    ds_valid_hi = tf.data.Dataset.list_files(str(validationHiRes / '*.png'), shuffle=False)
-    ds_valid_lo = tf.data.Dataset.list_files(str(validationLoRes / '*.png'), shuffle=False)
+    ds_valid_hi = tf.data.Dataset.list_files(str(validationHiRes / config['training']['glob']['validation_hires']), shuffle=False)
+    ds_valid_lo = tf.data.Dataset.list_files(str(validationLoRes / config['training']['glob']['validation_lowres']), shuffle=False)
 
-    ds_target_tr = tf.data.Dataset.list_files(str(trainingTarget / '*.png'), shuffle=False)
-    ds_target_va = tf.data.Dataset.list_files(str(validationTarget / '*.png'), shuffle=False)
+    ds_target_tr = tf.data.Dataset.list_files(str(trainingTarget / config['training']['glob']['truth_train']), shuffle=False)
+    ds_target_va = tf.data.Dataset.list_files(str(validationTarget / config['training']['glob']['truth_valid']), shuffle=False)
 
-    ds_train = create_full_dataset(ds_train_hi, ds_train_lo, ds_target_tr, activation = config['training']['model']['activation_final'])
-    ds_valid = create_full_dataset(ds_valid_hi, ds_valid_lo, ds_target_va, activation = config['training']['model']['activation_final'])
+    ds_train = create_full_dataset(ds_train_hi, ds_train_lo, ds_target_tr,
+                                   activation = config['training']['model']['activation_final'],
+                                   training=config['training']['dataset']['augment'])
+    ds_valid = create_full_dataset(ds_valid_hi, ds_valid_lo, ds_target_va, activation = config['training']['model']['activation_final'], training = False)
 
     ds_train = ds_train.shuffle(int(config['training']['dataset']['shuffle_size'])).batch(int(config['training']['dataset']['batch_size']))
     ds_valid = ds_valid.shuffle(int(config['training']['dataset']['shuffle_size'])).batch(int(config['training']['dataset']['batch_size']))
@@ -154,7 +185,7 @@ def main():
                K.metrics.MeanSquaredError()]
 
     #losses = [K.losses.MeanAbsoluteError()]
-    losses = [MSE_and_DSSIM(weight_dssim=0.3)]
+    losses = [MAE_and_DSSIM(weight_dssim=config['training']['fit']['weight_dssim'])]
 
     try:
         patience = int(config['training']['fit']['patience'])
@@ -171,7 +202,11 @@ def main():
             update_freq = 'batch',
             write_graph = True)
 
-    callbacks = [checkpointcb, tbcb, checkpointcbbest, earlystopcb]
+    csvName = log_directory / f'training_history_{datetime.now().strftime("%Y-%m-%dT%H-%M-%S")}.csv'
+    csvcb = K.callbacks.CSVLogger(str(csvName))
+
+#   callbacks = [checkpointcb, tbcb, checkpointcbbest, earlystopcb, csvcb]
+    callbacks = [tbcb, checkpointcbbest, earlystopcb, csvcb]
 
     # Build model.
     if MODEL == 'dsen2':
@@ -181,6 +216,7 @@ def main():
             num_blocks = config['training']['model']['num_blocks'],
             interpolation = config['training']['model']['interpolation'],
             classic = config['training']['model']['classic'],
+            scaling = config['training']['model']['scaling'],
             training = True
             )
     elif MODEL == 'unet':
@@ -193,8 +229,28 @@ def main():
                 add_batchnorm = config['training']['model']['add_batchnorm'],
                 final_layer = config['training']['model']['final_layer']
                 )
+    elif MODEL == 'edsr':
+        model = Sentinel2EDSR(
+                scaling_factor = config['training']['model']['scaling_factor'],
+                filter_size = config['training']['model']['filter_size'],
+                num_blocks = config['training']['model']['num_blocks'],
+                interpolation = config['training']['model']['interpolation'],
+                upsample = config['training']['model']['upsample'],
+                scaling = config['training']['model']['scaling'],
+                training = True,
+                initializer = config['training']['model']['initializer']
+                )
+    elif MODEL == 'spd':
+        model = Sentinel2ModelSPD(
+                scaling_factor = config['training']['model']['scaling_factor'],
+                filter_size = config['training']['model']['filter_size'],
+                num_blocks = config['training']['model']['num_blocks'],
+                initializer = config['training']['model']['initializer'],
+                scaling = config['training']['model']['scaling'],
+                training = True
+                )
     else:
-        raise Exception("Model type not identified.")
+        raise Exception(f"Model type not eligible: {MODEL}.")
 
 
     # Define optimizer.
@@ -211,6 +267,15 @@ def main():
                       epsilon = config['training']['optimizer']['epsilon'],
                       name = 'Nadam_Sentinel2')
 
+    if RESTART:
+        if 'hdf5' in weightsPath.name.split('.')[-1].lower() or 'h5' in weightsPath.name.split('.')[-1].lower():
+            model.load_weights(weightsPath)
+        else:
+            model.load_weights(weightsPath).expect_partial()
+        startEpoch = config['training']['restart']['epoch']
+    else:
+        startEpoch = 0
+
     model.compile(optimizer = optimizer, loss = losses, metrics = metrics, jit_compile=False)
 
     # Fit the model!
@@ -219,6 +284,7 @@ def main():
             epochs = epochs,
             verbose = 1,
             callbacks = callbacks,
+            initial_epoch = startEpoch,
             steps_per_epoch = steps_per_epoch,
             validation_data =  ds_valid,
             validation_steps = config['training']['fit']['validation_steps'] )

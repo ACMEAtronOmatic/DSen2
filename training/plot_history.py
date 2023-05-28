@@ -32,6 +32,7 @@ def main():
             pass
 
     print(df)
+    exit()
 
     fig = plt.figure(figsize=(9,7))
     ax = fig.add_subplot()

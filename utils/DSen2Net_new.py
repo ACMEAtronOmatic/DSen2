@@ -3,6 +3,28 @@ import tensorflow.keras as K
 from tensorflow.keras.layers import Input, Conv2D, Concatenate, Add, UpSampling2D, Dropout, MaxPool2D, LeakyReLU, BatchNormalization, SpatialDropout2D
 from sympy import factorint
 
+class SPDLayer(K.layers.Layer):
+    def __init__(self,
+                 block_size = 2,
+                 data_format = 'NHWC',
+                 *args,
+                 **kwargs):
+        self.block_size  = block_size
+        self.data_format = data_format
+        super(SPDLayer, self).__init__(*args,**kwargs)
+
+    def call(self, inputs):
+        return tf.nn.space_to_depth(inputs, block_size = self.block_size, data_format = self.data_format)
+
+    def get_config(self):
+        config = super().get_config().copy()
+        config.update({
+            'block_size' : self.block_size,
+            'data_format' : self.data_format
+            })
+        return config
+
+
 class PixelShuffle(K.layers.Layer):
     def __init__(self,
                  block_size = 2,
@@ -125,7 +147,7 @@ def Sentinel2EDSR(scaling_factor = 4,
                   filter_last  = None,
                   training = True):
 
-    upsample_options = ['shuffle', 'ups']
+    upsample_options = ['shuffle', 'upsample']
 
     if upsample.lower() not in upsample_options:
         raise Exception(f"Upsampling option must be one: {upsample_options}. User provided: {upsample.lower()}")
@@ -164,7 +186,8 @@ def Sentinel2EDSR(scaling_factor = 4,
         for ii, factor in enumerate(factorList):
             x = K.layers.Conv2D(filter_last * (factor ** 2), 3, padding='same', kernel_initializer=initializer, name = f'conv2d_pixel_shuffle_{ii:02d}')(x)
             x = PixelShuffle(block_size = factor,name = f'pixel_shuffle_{ii:02d}')(x)
-    elif upsample == 'ups':
+    elif upsample == 'upsample':
+        x = K.layers.Conv2D(filter_last, 3, padding='same', kernel_initializer=initializer, name = f'conv2d_upsampling2d_first')(x)
         for ii, factor in enumerate(factorList):
             x = UpSampling2D(size=(factor), interpolation=interpolation, name=f'upsampling2d_{ii:02d}')(x)
             x = K.layers.Conv2D(filter_last, 3, padding='same', kernel_initializer=initializer, name = f'conv2d_upsampling2d_{ii:02d}')(x)
@@ -177,7 +200,7 @@ def Sentinel2Model(scaling_factor = 4,
                    filter_size  = 128,
                    num_blocks   = 6, 
                    interpolation = 'bilinear',
-                   initializer = 'glorot_uniform',
+                   initializer = 'truncated_normal',
                    scaling = 0.1,
                    filter_first = None,
                    filter_res   = None,
@@ -205,18 +228,83 @@ def Sentinel2Model(scaling_factor = 4,
 
     # Residual Blocks
     for block in range(num_blocks):
-        x = ResidualBlock(filters = filter_size, initializer=initializer, scaling=scaling)(x)
-        if not classic:
-            x = SpatialDropout2D(0.1)(x, training=training)
+        x = ResidualBlock(filters = filter_size, initializer=initializer, scaling=scaling, add_batchnorm = False)(x)
+#       if not classic:
+#           x = SpatialDropout2D(0.1)(x, training=training)
 
     if classic:
         x = Conv2D(1, (3,3), kernel_initializer = initializer, padding='same', name = 'conv2d_final')(x)
         output = Add(name='addition_final')([x,up_low])
     else:
-        x = SpatialDropout2D(0.1)(x, training=training)
         x = Conv2D(1, (3,3), kernel_initializer = initializer, padding='same', activation='tanh', name='conv2d_after_res_block')(x)
         x = Add(name='addition_final')([x, up_low])
         output = Conv2D(1, 1, kernel_initializer = initializer, padding='same', activation='sigmoid', name = 'conv2d_final')(x)
+
+    return K.models.Model(inputs = [in_hi, in_low], outputs = output)
+
+def Sentinel2ModelSPD(scaling_factor = 4,
+                      filter_size  = 128,
+                      num_blocks   = 6, 
+                      initializer = 'truncated_normal',
+                      scaling = 0.1,
+                      channels = 1,
+                      filter_first = None,
+                      filter_res   = None,
+                      filter_last  = None,
+                      training = True,
+                      classic = True):
+
+    if filter_first == None: filter_first = filter_size
+    if filter_res   == None: filter_res   = filter_size
+    if filter_last  == None: filter_last  = filter_size
+
+    # Hi_Res input
+    in_hi = Input(shape = [None, None, channels], name = 'input_hi')
+
+    #Low-res input
+    in_low = Input(shape = [None, None, channels], name = 'input_low')
+
+    # Reduce the Hi-res input to the low-res input
+    down_hi = SPDLayer(block_size = scaling_factor, name = 'space_to_depth_hi-res')(in_hi)
+#   down_hi = Conv2D(filter_first, (scaling_factor*2-1,scaling_factor*2-1), stride=scaling_factor, activation='relu', padding='same', name = 'strided_conv2d_hi-res')(in_hi)
+
+    # Concatenate
+    concat = Concatenate(name='Concatenate_two-channels')([down_hi,in_low])
+
+    # First treat the concatenation
+    x = x_orig = Conv2D(filter_first, (3,3), kernel_initializer = initializer, activation='relu', padding='same', name= 'conv2d_initial')(concat)
+
+    # Residual Blocks
+    for block in range(num_blocks):
+        x = ResidualBlock(filters = filter_size, initializer=initializer, scaling=scaling)(x)
+#       if not classic:
+#           x = SpatialDropout2D(0.1)(x, training=training)
+
+    # Global feature fusion -- get number of filters to match
+    x = K.layers.Conv2D(filter_first, 1, padding='same', kernel_initializer = initializer, name = 'global_feature_fusion_01')(x)
+    x = K.layers.Conv2D(filter_first, 3, padding='same', kernel_initializer = initializer, name = 'global_feature_fusion_02')(x)
+
+    x = K.layers.Add(name='add_after_fusion')([x, x_orig])
+
+    # Factorize the scaling_factor
+    # The idea here is that if scaling_factor is too large, we can factorize in smaller jumps to improve performance.
+
+    factorDict = factorint(scaling_factor)
+    factorList = []
+    for k, v in factorDict.items():
+        for _ in range(v):
+            factorList.append(k)
+
+    if classic:
+        for ii, factor in enumerate(factorList):
+            x = K.layers.Conv2D(filter_last * (factor ** 2), 3, padding='same', kernel_initializer=initializer, name = f'conv2d_pixel_shuffle_{ii:02d}')(x)
+            x = PixelShuffle(block_size = factor,name = f'pixel_shuffle_{ii:02d}')(x)
+    else:
+        x = K.layers.Conv2D(filter_last, 3, padding='same', kernel_initializer=initializer, name = f'conv2d_upsampling2d_first')(x)
+        for ii, factor in enumerate(factorList):
+            x = UpSampling2D(size=(factor), interpolation=interpolation, name=f'upsampling2d_{ii:02d}')(x)
+            x = K.layers.Conv2D(filter_last, 3, padding='same', kernel_initializer=initializer, name = f'conv2d_upsampling2d_{ii:02d}')(x)
+    output = K.layers.Conv2D(channels, 3, padding="same", kernel_initializer=initializer, name = 'final_conv2d')(x)
 
     return K.models.Model(inputs = [in_hi, in_low], outputs = output)
 

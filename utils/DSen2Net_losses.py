@@ -30,7 +30,7 @@ class MAE_and_DSSIM(K.losses.Loss):
         self.max_val = max_val
 
     def call(self, y_true, y_pred):
-        mae = self.weight_mae * tf.reduce_mean(tf.math.abs(y_pred - y_true))
+        mae = self.weight_mae * tf.reduce_mean(tf.math.abs(y_pred - y_true),axis=[1,2,3])
         dssim = self.weight_dssim * (1. - tf.image.ssim(y_true, y_pred, max_val=self.max_val))
         return mae + dssim
 
