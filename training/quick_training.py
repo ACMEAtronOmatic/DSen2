@@ -198,7 +198,7 @@ def main():
             mode='min')
 
     tbcb = K.callbacks.TensorBoard(
-            log_dir = log_directory,
+            log_dir = logDir,
             update_freq = 'batch',
             write_graph = True)
 

@@ -81,12 +81,12 @@ class ResidualBlock(K.layers.Layer):
         self.add_batchnorm = add_batchnorm
 
         if self.add_batchnorm:
-            self.main_layers = [
-                Conv2D(self.filters, self.kernel_size, strides=1, padding='same', kernel_initializer = self.initializer, use_bias=False),
-                self.activation,
-                Conv2D(self.filters, self.kernel_size, strides = self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
-                BatchNormalization(),
-                ]
+#           self.main_layers = [
+#               Conv2D(self.filters, self.kernel_size, strides=1, padding='same', kernel_initializer = self.initializer, use_bias=False),
+#               self.activation,
+#               Conv2D(self.filters, self.kernel_size, strides = self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
+#               BatchNormalization(),
+#               ]
 
             self.skip_layers = []
             if strides > 1:
@@ -94,6 +94,14 @@ class ResidualBlock(K.layers.Layer):
                         Conv2D(self.filters, 1, strides = self.strides, padding='same', kernel_initializer = self.initializer, use_bias=False),
                         BatchNormalization()
                         ]
+            self.main_layers = [
+                    BatchNormalization(),
+                    self.activation,
+                    Conv2D(self.filters, self.kernel_size, strides = self.strides, padding = 'same', kernel_initializer = self.initializer, use_bias = False),
+                    BatchNormalization(),
+                    self.activation,
+                    Conv2D(self.filters, self.kernel_size, strides = 1, padding = 'same', kernel_initializer = self.initializer, use_bias = False)
+                    ]
         else:
             self.main_layers = [
                 Conv2D(self.filters, self.kernel_size, strides=1, padding='same', kernel_initializer = self.initializer, use_bias=False),
@@ -115,10 +123,7 @@ class ResidualBlock(K.layers.Layer):
         skip_Z = inputs
         for layer in self.skip_layers:
             skip_Z = layer(skip_Z)
-        if self.add_batchnorm:
-            return self.activation(Z + skip_Z)
-        else:
-            return Add()([Z, skip_Z]) # Feels strange not to BatchNorm and ReLU here
+        return Add()([Z, skip_Z]) # Feels strange not to BatchNorm and ReLU here
 
     def get_config(self):
         config = super().get_config().copy()

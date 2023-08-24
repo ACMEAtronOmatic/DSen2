@@ -182,7 +182,7 @@ def main():
         metrics = [K.metrics.MeanAbsoluteError(),
                    K.metrics.MeanAbsolutePercentageError(),
                    K.metrics.MeanSquaredError(),
-                   PSNR(), SSIM(), SRE(), TotalVariation()]
+                   PSNR(), SSIM(), SRE(scale = 255./3.), TotalVariation()]
 
         losses = [MAE_and_DSSIM(weight_dssim=config['training']['fit']['weight_dssim'])]
 
