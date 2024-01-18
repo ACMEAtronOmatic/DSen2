@@ -1,0 +1,68 @@
+---
+default:
+  run_id: 'edsr_with_dssim_pixshuff'
+  restart: false
+  model: 'edsr'
+training:
+  directory:
+    training_hires:    /home/dryglicki/data/sentinel-2/paired/training/red
+    training_lowres:   /home/dryglicki/data/sentinel-2/paired/training/nirLow
+    truth_train:       /home/dryglicki/data/sentinel-2/paired/training/nirHigh
+    validation_hires:  /home/dryglicki/data/sentinel-2/paired/validation/red
+    validation_lowres: /home/dryglicki/data/sentinel-2/paired/validation/nirLow
+    truth_valid:       /home/dryglicki/data/sentinel-2/paired/validation/nirHigh
+  dataset:
+    batch_size: 64
+    shuffle_size: 96
+    augment: False
+  glob:
+    training_hires:    '*.png'
+    training_lowres:   '*.png'
+    truth_train:       '*.png'
+    validation_hires:  '*.png'
+    validation_lowres: '*.png'
+    truth_valid:       '*.png'
+  fit:
+    epochs: 200
+    steps_per_epoch:
+    validation_steps: 100
+    patience: 10
+    weight_dssim: 0.25
+  model:
+    scaling_factor: 4
+    filter_size: 128
+    num_blocks: 32
+    interpolation: 'nearest'
+    scaling: 0.1
+    unet_filter_sizes:
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
+      - 1024
+    classic: True
+    add_batchnorm: false
+    final_layer: 'extra'
+    activation_final: 'sigmoid'
+    upsample: 'shuffle'
+    initializer: 'glorot_uniform'
+  optimizer:
+    name: 'adam'
+    initial_lr: 1.0e-4
+    final_lr: 1.0e-5
+    beta_1: 0.90
+    beta_2: 0.999
+    epsilon: 1.0e-7
+inference:
+  dataset:
+    batch_size: 2
+  directory:
+    test_hires:  /home/dryglicki/data/sentinel-2/paired/testing/red
+    test_lowres: /home/dryglicki/data/sentinel-2/paired/testing/nirLow
+    test_valid:       /home/dryglicki/data/sentinel-2/paired/testing/nirHigh
+    output: /home/dryglicki/data/sentinel-2/paired/inference/output
+  glob:
+    test_hires:  '*.png'
+    test_lowres: '*.png'
+    truth_test:  '*.png'

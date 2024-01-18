@@ -68,7 +68,7 @@ class BasicBlock(K.layers.Layer):
                  strides = 1,
                  use_bias = False,
                  spectral_normalization = False,
-                 alpha = 0.3,
+                 alpha = 0.1,
                  scaling = 1.0,
                  **kwargs):
         super(BasicBlock, self).__init__(**kwargs)
@@ -78,11 +78,13 @@ class BasicBlock(K.layers.Layer):
         self.use_bias = use_bias
         self.spectral_normalization = spectral_normalization
         self.alpha = alpha
+        self.scaling = tf.clip_by_value(scaling, 0.0, 1.0)
 
         self.conv2d = K.layers.Conv2D(filters = self.filters,
                                       kernel_size = self.kernel_size,
                                       strides = self.strides,
                                       use_bias = use_bias,
+                                      padding = 'same',
                                       activation = None)
         self.prelu = K.layers.PReLU(alpha_initializer  = K.initializers.Constant(value = self.alpha))
 
@@ -153,7 +155,7 @@ class ResidualDenseBlock(K.layers.Layer):
         self.blocks = []
         for _ in range(self.num_blocks):
             self.blocks.append(BasicBlock(filters = self.block_filters,
-                                     kernel_size = self.kernel_size,
+                                     kernel_size = self.block_kernel_size,
                                      strides = self.block_strides,
                                      use_bias = self.block_use_bias,
                                      spectral_normalization = self.block_spectral_normalization,
@@ -202,6 +204,35 @@ class ResidualDenseBlock(K.layers.Layer):
             'block_spectral_normalization' : self.block_spectral_normalization
             })
         return config
+
+class ResidualInResidualBlock(K.layers.Layer):
+    def __init__(self,
+                 num_rdb = 3,
+                 num_blocks = 5,
+                 block_filters = 64,
+                 block_kernel_size = (3,3),
+                 block_strides = 1,
+                 block_scaling = 1.0,
+                 block_alpha = 0.3,
+                 block_use_bias = False,
+                 block_spectral_normalization = False,
+                 rdb_scaling = 0.2,
+                 rdb_filters = 64,
+                 rdb_kernel_size = (3,3),
+                 rdb_strides = 1,
+                 rdb_use_bias = False,
+                 rdb_spectral_normalization = False,
+                 **kwargs):
+        super(ResidualInResidualDenseBlock, self).__init__(**kwargs)
+
+    def build(self, inputs):
+        self.beta = self.add_weight(
+                shape = (),
+                initializer = K.initializers.Constant(value = self.scaling),
+                trainable = True
+                )
+        super(ResidualInResidualDenseBlock, self).build(input_shape)
+
 
 
 class ResidualBlock(K.layers.Layer):
