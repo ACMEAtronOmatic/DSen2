@@ -1,45 +1,66 @@
 # DSen2
-Deep Sentinel-2
+Deep Sentinel-2 and modifications
 
 [Super-Resolution of Sentinel-2 Images: Learning a Globally Applicable Deep Neural Network](https://arxiv.org/abs/1803.04271)
 
-Contact: Charis Lanaras, charis.lanaras@alumni.ethz.ch
+Original author: Charis Lanaras, charis.lanaras@alumni.ethz.ch
 
 ## Requirements
 
-- tensorflow-gpu (or tensorflow)
-- keras
-- nupmy
-- scikit-image
+- Tensorflow (no more tensorflow-gpu after 2.14)
+- Keras
+- Numpy
+- Scikit-image
 - argparse
-- imageio
-- matplotlib (optional)
-- GDAL >= 2.2 (optional)
+- Rasterio
+- Matplotlib
+- Cartopy
+- Sympy
+- Osgeo
+- Geopandas
+- SentinelSat
+- joblib
+- Pillow
+- Pandas
+- YAML/PyYAML
 
 ## Training
 
-See the detailed description in the `training` directory. Use the `--resume` option with your application related Sentinel-2 tiles to refine the provided network weights.
+Training is handled by reading and processing configuration YAML files in the `config` directory. During training time, the config files are copied to the run directory of the simulation. YAML files look like this:
 
-## Using the Trained Network
-
-The network can be used directly on downloaded Sentinel-2 tiles. See details in the `s2_tiles_supres.py` file. An example follows:
 ```
- python s2_tiles_supres.py /path/to/S2A_MSIL1C_20161230T074322_N0204_R092_T37NCE_20161230T075722.SAFE/MTD_MSIL1C.xml /path/to/output_file.tif --roi_x_y "100,100,2000,2000"
+---
+default:
+  run_id: 'firewx-dsen2_mae_and_dssim'
+  restart: false
+  model: 'dsen2'
+training:
+  restart:
+    path: /home/dryglicki/code/DSen2/training/firewx-unet_mae/best_checkpoints/best-min_val_loss-epoch_0200.hdf5
+    epoch: 200
+  directory:
+    training_hires:    /home/dryglicki/data/sentinel-2/paired/training/red
+    training_lowres:   /home/dryglicki/data/sentinel-2/paired/training/nirLow
+    truth_train:       /home/dryglicki/data/sentinel-2/paired/training/nirHigh
+    validation_hires:  /home/dryglicki/data/sentinel-2/paired/validation/red
+    validation_lowres: /home/dryglicki/data/sentinel-2/paired/validation/nirLow
+    truth_valid:       /home/dryglicki/data/sentinel-2/paired/validation/nirHigh
+  dataset:
+    batch_size: 48
+    shuffle_size: 64
+    augment: true
+...
 ```
 
-Point to the `.xml` file of the uzipped S2 tile. You must also provide an output file -- consider using a `.tif` extension that is easily read by QGIS. If you want to also copy the high resolution (10m bands) you can do so, with the option `--copy_original_bands`.
-To also predict the lowest resolution bands (60m) use the `--run_60` option.
+Explore the `config` directory for further examples.
 
-## MATLAB Demo
+## Using a Trained Network
 
-The demo is also ported to MATLAB: `demoDSen2.m`. However, MATLAB 2018a or newer is needed to run. It utilizes the Neural Network toolbox that can be accelerated with the Parallel Computing Toolbox.
+In the `training` directory, weights and serialized models can be found in the directories of each simulation that is uploaded to github.
 
-## Used Sentinel-2 tiles
-
-The Sentinel-2 tiles used for training and testing are listed in:
-
-- `S2_tiles_training.txt`
-- `S2_tiles_testing.txt`
-
-They can be downloaded from the [Copernicus Open Access Hub](https://scihub.copernicus.eu/dhus/).
-
+## Downloading/preprocessing Sentinel-2 data
+1. Create a JSON file that creates a bounding box for a Sentinel-2 API search. [This link](https://geojson.io) can be used build one.
+2. Use `auxiliary/sentinel-2/download/save_to_GeoJSON.py` to read the JSONs created by the previous step. This step checks for availability based on cloud cover, geographic location,
+and time of year. The output of this would be GeoJSON files.
+3. Use `auxiliary/sentinel-2/download/download_in_chunks.py` to read the GeoJSON files and download the data.
+4. Use `auxiliary/sentinel-2/image_processing/create_paired_training_set_red-nir.py` to create the training/validation triplets: VIS High-Res, NIR Low-Res, and NIR High-Res.
