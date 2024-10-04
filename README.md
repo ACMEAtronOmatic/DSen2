@@ -64,3 +64,19 @@ In the `training` directory, weights and serialized models can be found in the d
 and time of year. The output of this would be GeoJSON files.
 3. Use `auxiliary/sentinel-2/download/download_in_chunks.py` to read the GeoJSON files and download the data.
 4. Use `auxiliary/sentinel-2/image_processing/create_paired_training_set_red-nir.py` to create the training/validation triplets: VIS High-Res, NIR Low-Res, and NIR High-Res.
+
+## Model Training
+
+Training is handled by `training/quick_training.py`. It will utilize a user's config file from `config/`.
+```
+usage: quick_training.py [-h] [--noclobber] yaml_file
+
+Training a pan-sharpening neural network.
+
+positional arguments:
+  yaml_file    YAML file with training guidelines.
+
+options:
+  -h, --help   show this help message and exit
+  --noclobber  Do not clobber existing directories.
+```

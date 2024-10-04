@@ -3,6 +3,7 @@
 import tensorflow as tf
 from tensorflow import keras as K
 
+@tf.keras.utils.register_keras_serializable()
 class PSNR(K.metrics.Metric):
 
     def __init__(self, min_val = 0.0, max_val = 1.0, name='psnr', **kwargs):
@@ -32,6 +33,7 @@ class PSNR(K.metrics.Metric):
             })
         return config
 
+@tf.keras.utils.register_keras_serializable()
 class SSIM(K.metrics.Metric):
     def __init__(self, min_val = 0.0, max_val = 1.0, name='ssim', **kwargs):
         super().__init__(name=name, **kwargs)
@@ -60,15 +62,25 @@ class SSIM(K.metrics.Metric):
             })
         return config
 
+@tf.keras.utils.register_keras_serializable()
 class SRE(K.metrics.Metric):
-    def __init__(self, name = 'sre', **kwargs):
+    def __init__(self, name = 'sre', remap = True, max_val = 255., min_val = 0., **kwargs):
         super().__init__(name = name, **kwargs)
         self.sre = self.add_weight(name = name, initializer = 'zeros')
+        self.remap = remap
+        self.max_val = max_val
+        self.min_val = min_val
+
+    def _remap(self, inputs):
+        return inputs * (self.max_val - self.min_val) + self.min_val
 
     def update_state(self, y_true, y_pred, sample_weight = None):
+        if self.remap:
+            y_true = self._remap(y_true)
+            y_pred = self._remap(y_pred)
         meanVal = tf.square(tf.reduce_mean(y_true, axis=[1,2,3]))
         MSE = tf.reduce_mean(tf.square(y_true - y_pred), axis=[1,2,3])
-        self.sre = tf.reduce_mean(10.0 * tf.experimental.numpy.log10(meanVal / (MSE + K.backend.epsilon())), axis=-1)
+        self.sre = tf.reduce_mean( 10.0 * tf.experimental.numpy.log10(meanVal / (MSE + K.backend.epsilon())) )
 
     def result(self):
         return self.sre
@@ -83,6 +95,7 @@ class SRE(K.metrics.Metric):
             })
         return config
 
+@tf.keras.utils.register_keras_serializable()
 class TotalVariation(K.metrics.Metric):
     def __init__(self, name = 'total_variation', **kwargs):
         super().__init__(name = name, **kwargs)

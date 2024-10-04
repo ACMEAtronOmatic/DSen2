@@ -3,6 +3,7 @@ import tensorflow.keras as K
 from tensorflow.keras.layers import Input, Conv2D, Concatenate, Add, UpSampling2D, Dropout, MaxPool2D, LeakyReLU, BatchNormalization, SpatialDropout2D
 from sympy import factorint
 
+@tf.keras.utils.register_keras_serializable()
 class SPDLayer(K.layers.Layer):
     def __init__(self,
                  block_size = 2,
@@ -25,6 +26,7 @@ class SPDLayer(K.layers.Layer):
         return config
 
 
+@tf.keras.utils.register_keras_serializable()
 class PixelShuffle(K.layers.Layer):
     def __init__(self,
                  block_size = 2,
@@ -46,6 +48,7 @@ class PixelShuffle(K.layers.Layer):
             })
         return config
 
+@tf.keras.utils.register_keras_serializable()
 class Scaling(K.layers.Layer):
     def __init__(self, scale, *args, **kwargs):
         self.scale = scale
@@ -61,6 +64,7 @@ class Scaling(K.layers.Layer):
         })
         return config
 
+@tf.keras.utils.register_keras_serializable()
 class BasicBlock(K.layers.Layer):
     def __init__(self,
                  filters = 32,
@@ -86,7 +90,7 @@ class BasicBlock(K.layers.Layer):
                                       use_bias = use_bias,
                                       padding = 'same',
                                       activation = None)
-        self.prelu = K.layers.PReLU(alpha_initializer  = K.initializers.Constant(value = self.alpha))
+        self.prelu = K.layers.PReLU(alpha_initializer  = K.initializers.Constant(value = self.alpha), shared_axes = [1,2])
 
     def build(self, input_shape, **kwargs):
         self.gamma = self.add_weight(
@@ -114,6 +118,7 @@ class BasicBlock(K.layers.Layer):
             })
         return config
 
+@tf.keras.utils.register_keras_serializable()
 class ResidualDenseBlock(K.layers.Layer):
     def __init__(self,
                  num_blocks = 5,
@@ -205,6 +210,7 @@ class ResidualDenseBlock(K.layers.Layer):
             })
         return config
 
+@tf.keras.utils.register_keras_serializable()
 class ResidualInResidualBlock(K.layers.Layer):
     def __init__(self,
                  num_rdb = 3,
@@ -235,6 +241,7 @@ class ResidualInResidualBlock(K.layers.Layer):
 
 
 
+@tf.keras.utils.register_keras_serializable()
 class ResidualBlock(K.layers.Layer):
     def __init__(self,
                  filters = 128,

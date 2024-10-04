@@ -12,7 +12,6 @@ import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
-import h5py
 from argparse import ArgumentParser
 import yaml
 import pickle
@@ -112,7 +111,7 @@ def main():
 
     validationHiRes = Path(config['inference']['directory']['test_hires'])
     validationLoRes = Path(config['inference']['directory']['test_lowres'])
-    validationTarget = Path(config['inference']['directory']['truth_test'])
+    validationTarget = Path(config['inference']['directory']['test_valid'])
 
     ds_valid_hi = tf.data.Dataset.list_files(str(validationHiRes / config['inference']['glob']['test_hires']), shuffle=False)
     ds_valid_lo = tf.data.Dataset.list_files(str(validationLoRes / config['inference']['glob']['test_lowres']), shuffle=False)
@@ -174,7 +173,7 @@ def main():
             hi = denorm(np.squeeze(X['input_hi'].numpy()))
 
     else:
-        fig = plt.figure(figsize=(9,8))
+#       fig = plt.figure(figsize=(9,8))
         metrics = {}
         upResLogics = ['Bilinear', 'Bicubic', 'CNN']
         metricTypes = ['mae', 'mse', 'ssim']
@@ -185,6 +184,8 @@ def main():
 
         for X, Y, fname in ds_valid:
 
+            print(X)
+            exit()
             inPath = Path(str(fname.numpy()))
             fStem = inPath.stem
             outputPath = imagePath / f'{fStem}_sr.png'
@@ -216,21 +217,24 @@ def main():
             metrics['CNN']['mse'].append(mse(np.array(imtruth),np.array(imout)))
             metrics['CNN']['ssim'].append(ssim(np.array(imtruth),np.array(imout), data_range = np.array(imout).max() - np.array(imout).min()))
     
-            axes = fig.subplots(nrows = 3, ncols = 2, gridspec_kw = {'hspace': 0.2, 'wspace':0.05} ).flatten()
+#           axes = fig.subplots(nrows = 3, ncols = 2, gridspec_kw = {'hspace': 0.2, 'wspace':0.05} ).flatten()
 #           images = [imhi, imlo, imtruth, imlobc, imlobl, imout]
 #           titles = [ '(a) VIS hi-res', '(b) NIR low-res', '(c) NIR truth', '(d) NIR bicubic', '(e) NIR bilinear', '(f) NIR CNN' ]
 #           For OWR
-            images = [imhi, imlobl, imlo, imlobc, imtruth, imout]
-            titles = [ '(a) Broadband hi-res', '(b) NIR bilinear', '(c) NIR low-res', '(d) NIR bicubic', '(e) NIR truth', '(f) NIR CNN' ]
-            
-            for ax, im, title in zip(axes, images, titles):
-                simple_plot(ax,im,title)
-    
-            fig.savefig(outputPath, dpi=200, bbox_inches='tight')
-    
-            fig.clf()
+#           images = [imhi, imlobl, imlo, imlobc, imtruth, imout]
+#           titles = [ '(a) Broadband hi-res', '(b) NIR bilinear', '(c) NIR low-res', '(d) NIR bicubic', '(e) NIR truth', '(f) NIR CNN' ]
+#           
+#           for ax, im, title in zip(axes, images, titles):
+#               simple_plot(ax,im,title)
+#   
+#           fig.savefig(outputPath, dpi=200, bbox_inches='tight')
+#   
+#           fig.clf()
 
         pretty_print_metrics(metrics)
+
+    model.save('for_doug_Keras_PB')
+    model.save('model.keras')
 
 if __name__ == '__main__':
     main()

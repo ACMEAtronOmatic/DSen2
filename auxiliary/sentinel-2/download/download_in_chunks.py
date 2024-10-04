@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 from rasterio import plot
 from rasterio.plot import show
 from rasterio.mask import mask
-from osgeo import gdal
 from pathlib import Path
 import os
 import numpy as np

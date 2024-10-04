@@ -8,12 +8,12 @@ training:
     path: /home/dryglicki/code/DSen2/training/firewx-unet_mae/best_checkpoints/best-min_val_loss-epoch_0200.hdf5
     epoch: 200
   directory:
-    training_hires:    /home/dryglicki/data/sentinel-2/paired/training/red
-    training_lowres:   /home/dryglicki/data/sentinel-2/paired/training/nirLow
-    truth_train:       /home/dryglicki/data/sentinel-2/paired/training/nirHigh
-    validation_hires:  /home/dryglicki/data/sentinel-2/paired/validation/red
-    validation_lowres: /home/dryglicki/data/sentinel-2/paired/validation/nirLow
-    truth_valid:       /home/dryglicki/data/sentinel-2/paired/validation/nirHigh
+    training_hires:    /data2/dryglicki/data/sentinel-2/paired/training/red
+    training_lowres:   /data2/dryglicki/data/sentinel-2/paired/training/nirLow
+    truth_train:       /data2/dryglicki/data/sentinel-2/paired/training/nirHigh
+    validation_hires:  /data2/dryglicki/data/sentinel-2/paired/validation/red
+    validation_lowres: /data2/dryglicki/data/sentinel-2/paired/validation/nirLow
+    truth_valid:       /data2/dryglicki/data/sentinel-2/paired/validation/nirHigh
   dataset:
     batch_size: 48
     shuffle_size: 64
@@ -61,10 +61,10 @@ inference:
   dataset:
     batch_size: 128
   directory:
-    test_hires:  /home/dryglicki/data/sentinel-2/paired/testing/red
-    test_lowres: /home/dryglicki/data/sentinel-2/paired/testing/nirLow
-    test_valid:       /home/dryglicki/data/sentinel-2/paired/testing/nirHigh
-    output: /home/dryglicki/data/sentinel-2/paired/inference/output
+    test_hires:       /data2/dryglicki/data/sentinel-2/paired/testing/red
+    test_lowres:      /data2/dryglicki/data/sentinel-2/paired/testing/nirLow
+    test_valid:       /data2/dryglicki/data/sentinel-2/paired/testing/nirHigh
+    output:           /data2/dryglicki/data/sentinel-2/paired/inference/output
   glob:
     test_hires:  '*.png'
     test_lowres: '*.png'
